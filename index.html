@@ -321,14 +321,18 @@ function App() {
   const onCat = (c) => { setCategory(c); setTotalDistance(getOfficialDistance(c, discipline)); resetRace(); };
   const onDisc = (d) => { setDiscipline(d); setTotalDistance(getOfficialDistance(category, d)); resetRace(); };
 
-  const recordSprint = (sprintId, isFinal, positions) => {
-    const nr = { sprintId, isFinal, positions: positions.filter(Boolean).map(Number) };
+  // Enregistrement LIVE : chaque point indépendant.
+  // positions = tableau des ids (peut contenir des trous → filtrés).
+  // Point vidé (aucune position) → retiré des résultats.
+  const updateSprint = (sprintId, isFinal, positions) => {
+    const filled = positions.filter(Boolean).map(Number);
     setSprintResults(prev => {
-      const i = prev.findIndex(s => s.sprintId === sprintId);
-      if (i >= 0) { const c = [...prev]; c[i] = nr; return c; }
-      return [...prev, nr];
+      const without = prev.filter(s => s.sprintId !== sprintId);
+      if (filled.length === 0) return without;
+      return [...without, { sprintId, isFinal, positions: filled }];
     });
-    setLastSprintId(sprintId);
+    const complete = filled.length === (isFinal ? 3 : 2);
+    if (complete) setLastSprintId(sprintId);
   };
   const setLap = (id, v) => {
     setLapChanges(prev => ({ ...prev, [id]: v }));
@@ -403,7 +407,7 @@ function App() {
           <CourseTab {...{ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, favorites, toggleFav, coachClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }} />
         )}
         {tab === 'saisie' && (
-          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }} />
+          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, updateSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }} />
         )}
         {tab === 'classement' && (
           <ClassementTab {...{ ranking: rankingWithMove, teamRanking, favorites, pointsInfo }} />
@@ -563,7 +567,7 @@ function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, 
         ))}
       </Block>
 
-      <Block title={`Schéma sprints (${config.sprints.length - 1} + arrivée)`}>
+      <Block title={`Schéma des points (${config.sprints.length - 1} + arrivée)`}>
         <div className="flex flex-wrap gap-1">
           {config.sprints.map((sp, idx) => {
             const rec = sprintResults.find(r => r.sprintId === sp.id);
@@ -618,10 +622,10 @@ function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, 
 // ============================================================
 // TAB : SAISIE (sprint actif + tours/statuts)
 // ============================================================
-function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }) {
+function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, updateSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }) {
   const [lapsOpen, setLapsOpen] = useState(false);
   const [lapQuery, setLapQuery] = useState('');
-  if (!activeSprint) return <div className="p-4 text-zinc-500 text-sm">Aucun sprint configuré.</div>;
+  if (!activeSprint) return <div className="p-4 text-zinc-500 text-sm">Aucun point configuré.</div>;
   const existing = sprintResults.find(r => r.sprintId === activeSprint.id);
   const lapList = lapQuery ? searchSkaters(skaters, lapQuery) : skaters.slice().sort((a,b)=>a.bib-b.bib);
 
@@ -629,23 +633,23 @@ function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, 
     <div className="p-3 space-y-3">
       {/* bandeau info course */}
       <div className="grid grid-cols-4 gap-px bg-zinc-800 border border-zinc-800 text-center">
-        <Info label="Sprint" value={activeSprint.label} accent />
-        <Info label="Sprints rest." value={pointsInfo.remaining} />
+        <Info label="Point" value={activeSprint.label} accent />
+        <Info label="Points rest." value={pointsInfo.remaining} />
         <Info label="Pts max coureur" value={pointsInfo.maxSolo} />
         <Info label="Pts totaux rest." value={pointsInfo.total} />
       </div>
 
-      {/* nav sprint */}
+      {/* nav point */}
       <div className="flex items-center gap-2">
         <button onClick={() => activeSprintIdx > 0 && setActiveSprintIdx(activeSprintIdx - 1)}
           disabled={activeSprintIdx === 0}
           className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">←</button>
         <div className="flex-1 text-center">
           <div className="text-[10px] text-zinc-500 uppercase tracking-wider">
-            {activeSprint.isFinal ? 'Sprint final · 3-2-1' : 'Sprint inter · 2-1'}
+            {activeSprint.isFinal ? 'Arrivée · 3-2-1' : 'Point intermédiaire · 2-1'}
           </div>
-          <div className="text-3xl font-bold">SPRINT <span className="text-red-500">{activeSprint.label}</span></div>
-          {existing && <div className="text-[10px] text-emerald-400">✓ enregistré — modifiable</div>}
+          <div className="text-3xl font-bold">{activeSprint.isFinal ? <span className="text-red-500">ARRIVÉE</span> : <>POINT <span className="text-red-500">{activeSprint.label}</span></>}</div>
+          {existing && <div className="text-[10px] text-emerald-400">✓ enregistré — clique une place pour corriger</div>}
         </div>
         <button onClick={() => activeSprintIdx < config.sprints.length - 1 && setActiveSprintIdx(activeSprintIdx + 1)}
           disabled={activeSprintIdx === config.sprints.length - 1}
@@ -654,10 +658,8 @@ function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, 
 
       <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} favorites={favorites} pointsById={pointsById}
         existing={existing}
-        onSubmit={(positions) => {
-          recordSprint(activeSprint.id, activeSprint.isFinal, positions);
-          if (activeSprintIdx < config.sprints.length - 1) setActiveSprintIdx(activeSprintIdx + 1);
-        }} />
+        onChange={(positions) => updateSprint(activeSprint.id, activeSprint.isFinal, positions)}
+        onAdvance={() => { if (activeSprintIdx < config.sprints.length - 1) setActiveSprintIdx(activeSprintIdx + 1); }} />
 
       {/* tours & statuts — avec recherche */}
       <div className="border-t border-zinc-800 pt-3">
@@ -734,7 +736,7 @@ function orderedCandidates(skaters, favorites, pointsById, query, excludeIds) {
   return [...coached, ...scored, ...rest];
 }
 
-function FastSprintInput({ sprint, skaters, favorites, pointsById, existing, onSubmit }) {
+function FastSprintInput({ sprint, skaters, favorites, pointsById, existing, onChange, onAdvance }) {
   const slots = sprint.isFinal ? 3 : 2;
   const pts = sprint.isFinal ? [3, 2, 1] : [2, 1];
   const init = () => existing ? Array.from({ length: slots }, (_, i) => existing.positions[i] || null) : Array(slots).fill(null);
@@ -757,20 +759,29 @@ function FastSprintInput({ sprint, skaters, favorites, pointsById, existing, onS
   );
 
   const selectSkater = (id) => {
+    const wasComplete = picks.every(Boolean);
     const c = [...picks];
     c[openSlot] = id;
     setPicks(c);
+    onChange(c);                 // recalcul live du classement
     setQuery('');
-    let next = -1;
-    for (let i = 0; i < slots; i++) { if (!c[i]) { next = i; break; } }
-    setOpenSlot(next); // null si tout rempli → menu se ferme
+    const nowComplete = c.every(Boolean);
+    if (nowComplete) {
+      if (!wasComplete) { setOpenSlot(null); onAdvance(); } // flux normal → point suivant
+      else { setOpenSlot(null); }                            // correction → on reste
+    } else {
+      let next = -1;
+      for (let i = 0; i < slots; i++) { if (!c[i]) { next = i; break; } }
+      setOpenSlot(next);
+    }
   };
   const clearSlot = (i) => {
-    setPicks(prev => { const c = [...prev]; c[i] = null; return c; });
+    const c = [...picks]; c[i] = null;
+    setPicks(c);
+    onChange(c);                 // retire le point si plus rien
     setQuery('');
     setOpenSlot(i);
   };
-  const allFilled = picks.every(Boolean);
 
   return (
     <div>
@@ -838,10 +849,9 @@ function FastSprintInput({ sprint, skaters, favorites, pointsById, existing, onS
         </div>
       )}
 
-      <button onClick={() => onSubmit(picks)} disabled={!picks.some(Boolean)}
-        className="w-full mt-2 py-3.5 bg-red-600 active:bg-red-500 disabled:opacity-40 text-white text-lg font-bold uppercase tracking-wider">
-        {existing ? 'Mettre à jour' : 'Valider'}{allFilled ? ' ✓' : ''}
-      </button>
+      <div className="mt-2 text-center text-[10px] text-zinc-600">
+        P1 + P2 remplis → enregistré et passage auto au point suivant. Flèches ← → pour corriger / point oublié.
+      </div>
     </div>
   );
 }
@@ -911,13 +921,13 @@ function ClassementTab({ ranking, teamRanking, favorites, pointsInfo }) {
         <button onClick={()=>setView('team')} className={`py-2 text-xs uppercase tracking-wider border ${view==='team'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>Équipes</button>
       </div>
       <div className="flex justify-between items-center text-[10px] text-zinc-500 mb-2 px-1">
-        <span>{pointsInfo.remaining} sprint{pointsInfo.remaining>1?'s':''} restant{pointsInfo.remaining>1?'s':''}</span>
+        <span>{pointsInfo.remaining} point{pointsInfo.remaining>1?'s':''} restant{pointsInfo.remaining>1?'s':''}</span>
         <span><span className="text-zinc-300 font-bold">{pointsInfo.total}</span> pts à distribuer · max <span className="text-zinc-300 font-bold">{pointsInfo.maxSolo}</span> pour 1 coureur</span>
       </div>
 
       {view === 'indiv' ? (
         <div className="space-y-px">
-          <div className="text-[9px] text-zinc-600 uppercase mb-1">Tours › Pts › Dernier sprint › Arrivée</div>
+          <div className="text-[9px] text-zinc-600 uppercase mb-1">Tours › Pts › Dernier point › Arrivée</div>
           {ranking.map((r, i) => {
             const leader = i === 0 && !r.statusVoid;
             return (
