@@ -298,6 +298,15 @@ function App() {
   const [lapChanges, setLapChanges] = useState(() => LS.get('lapChanges', {}));
   const [activeSprintIdx, setActiveSprintIdx] = useState(0);
   const [showImport, setShowImport] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [lastSprintId, setLastSprintId] = useState(null); // pour les flèches ↑↓
+  const toastTimer = useRef(null);
+
+  const showToast = (msg, type) => {
+    setToast({ msg, type });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2800);
+  };
 
   // persistance
   useEffect(() => LS.set('skaters', skaters), [skaters]);
@@ -319,13 +328,49 @@ function App() {
       if (i >= 0) { const c = [...prev]; c[i] = nr; return c; }
       return [...prev, nr];
     });
+    setLastSprintId(sprintId);
   };
-  const setLap = (id, v) => setLapChanges(prev => ({ ...prev, [id]: v }));
-  const setStatus = (id, st) => setSkaters(prev => prev.map(s => s.id === id ? { ...s, status: s.status === st ? null : st } : s));
+  const setLap = (id, v) => {
+    setLapChanges(prev => ({ ...prev, [id]: v }));
+    const sk = skaters.find(s => s.id === id);
+    if (sk) {
+      if (v === 1) showToast(`+1 TOUR · ${sk.bib} ${sk.name}`, 'gain');
+      else if (v === -1) showToast(`LAPPÉ · ${sk.bib} ${sk.name} — points annulés`, 'loss');
+    }
+  };
+  const setStatus = (id, st) => {
+    setSkaters(prev => prev.map(s => s.id === id ? { ...s, status: s.status === st ? null : st } : s));
+    const sk = skaters.find(s => s.id === id);
+    if (sk && sk.status !== st) showToast(`${st} · ${sk.bib} ${sk.name}`, 'loss');
+  };
   const toggleFav = (id) => setFavorites(prev => prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]);
   const importSkaters = (list) => { setSkaters(list); resetRace(); setShowImport(false); };
 
   const ranking = useMemo(() => computeRanking(skaters, sprintResults, lapChanges), [skaters, sprintResults, lapChanges]);
+  // classement AVANT le dernier sprint validé → pour calculer les mouvements ↑↓
+  const prevRanking = useMemo(() => {
+    if (lastSprintId == null) return null;
+    const without = sprintResults.filter(s => s.sprintId !== lastSprintId);
+    if (without.length === sprintResults.length) return null;
+    return computeRanking(skaters, without, lapChanges);
+  }, [skaters, sprintResults, lapChanges, lastSprintId]);
+  const rankingWithMove = useMemo(() => {
+    if (!prevRanking) return ranking.map(r => ({ ...r, move: 0 }));
+    const map = {}; prevRanking.forEach(p => { map[p.id] = p.rank; });
+    return ranking.map(r => ({ ...r, move: map[r.id] != null ? map[r.id] - r.rank : 0 }));
+  }, [ranking, prevRanking]);
+  // points encore distribuables (sprints non encore enregistrés)
+  const pointsInfo = useMemo(() => {
+    const recordedIds = new Set(sprintResults.map(s => s.sprintId));
+    let total = 0, maxSolo = 0;
+    config.sprints.forEach(sp => {
+      if (recordedIds.has(sp.id)) return;
+      total += sp.isFinal ? 6 : 3;       // 3+2+1 ou 2+1
+      maxSolo += sp.isFinal ? 3 : 2;     // ce qu'un seul coureur peut encore rafler
+    });
+    return { total, maxSolo, remaining: config.sprints.length - sprintResults.length };
+  }, [config, sprintResults]);
+
   const teamRanking = useMemo(() => computeTeamRanking(ranking), [ranking]);
   const activeSprint = config.sprints[activeSprintIdx];
   const recordedCount = sprintResults.length;
@@ -350,12 +395,22 @@ function App() {
           <CourseTab {...{ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, favorites, toggleFav, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab }} />
         )}
         {tab === 'saisie' && (
-          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus }} />
+          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus, pointsInfo }} />
         )}
         {tab === 'classement' && (
-          <ClassementTab {...{ ranking, teamRanking, favorites }} />
+          <ClassementTab {...{ ranking: rankingWithMove, teamRanking, favorites, pointsInfo }} />
         )}
       </main>
+
+      {/* TOAST prises de tour / statuts */}
+      {toast && (
+        <div className={`fixed left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 border-2 text-sm font-bold uppercase tracking-wider flex items-center gap-2 ${
+          toast.type === 'gain' ? 'bg-emerald-950 border-emerald-500 text-emerald-300' : 'bg-red-950 border-red-500 text-red-300'
+        }`} style={{ bottom: 'calc(env(safe-area-inset-bottom) + 72px)', maxWidth: '92vw' }}>
+          <span className="text-lg">{toast.type === 'gain' ? '▲' : '▼'}</span>
+          <span className="truncate">{toast.msg}</span>
+        </div>
+      )}
 
       {/* BOTTOM TABS */}
       <nav className="safe-bottom bg-black border-t border-zinc-800 grid grid-cols-3 shrink-0">
@@ -474,38 +529,49 @@ function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, 
 // ============================================================
 // TAB : SAISIE (sprint actif + tours/statuts)
 // ============================================================
-function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus }) {
+function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus, pointsInfo }) {
   const [lapsOpen, setLapsOpen] = useState(false);
+  const [lapQuery, setLapQuery] = useState('');
   if (!activeSprint) return <div className="p-4 text-zinc-500 text-sm">Aucun sprint configuré.</div>;
   const existing = sprintResults.find(r => r.sprintId === activeSprint.id);
+  const nextSprint = config.sprints[activeSprintIdx + 1];
+  const lapList = lapQuery ? searchSkaters(skaters, lapQuery) : skaters.slice().sort((a,b)=>a.bib-b.bib);
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-3 space-y-3">
+      {/* bandeau info course */}
+      <div className="grid grid-cols-4 gap-px bg-zinc-800 border border-zinc-800 text-center">
+        <Info label="Sprint" value={activeSprint.label} accent />
+        <Info label="Suivant" value={nextSprint ? nextSprint.label : '—'} />
+        <Info label="Sprints rest." value={pointsInfo.remaining} />
+        <Info label="Pts dispo" value={pointsInfo.total} />
+      </div>
+
       {/* nav sprint */}
       <div className="flex items-center gap-2">
         <button onClick={() => activeSprintIdx > 0 && setActiveSprintIdx(activeSprintIdx - 1)}
           disabled={activeSprintIdx === 0}
-          className="px-3 py-2 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-sm">←</button>
+          className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">←</button>
         <div className="flex-1 text-center">
           <div className="text-[10px] text-zinc-500 uppercase tracking-wider">
             {activeSprint.isFinal ? 'Sprint final · 3-2-1' : 'Sprint inter · 2-1'}
           </div>
           <div className="text-3xl font-bold">SPRINT <span className="text-red-500">{activeSprint.label}</span></div>
-          {existing && <div className="text-[10px] text-emerald-400">✓ enregistré</div>}
+          {existing && <div className="text-[10px] text-emerald-400">✓ enregistré — modifiable</div>}
         </div>
         <button onClick={() => activeSprintIdx < config.sprints.length - 1 && setActiveSprintIdx(activeSprintIdx + 1)}
           disabled={activeSprintIdx === config.sprints.length - 1}
-          className="px-3 py-2 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-sm">→</button>
+          className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">→</button>
       </div>
 
-      <SprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} favorites={favorites}
+      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} favorites={favorites}
         existing={existing}
         onSubmit={(positions) => {
           recordSprint(activeSprint.id, activeSprint.isFinal, positions);
           if (activeSprintIdx < config.sprints.length - 1) setActiveSprintIdx(activeSprintIdx + 1);
         }} />
 
-      {/* tours & statuts */}
+      {/* tours & statuts — avec recherche */}
       <div className="border-t border-zinc-800 pt-3">
         <button onClick={() => setLapsOpen(o => !o)}
           className="w-full flex justify-between items-center text-[10px] tracking-[0.25em] text-zinc-500 uppercase">
@@ -513,29 +579,43 @@ function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, 
           <span>{lapsOpen ? '▲' : '▼'}</span>
         </button>
         {lapsOpen && (
-          <div className="mt-2 border border-zinc-800 bg-black p-1 max-h-72 overflow-y-auto space-y-px">
-            {skaters.slice().sort((a,b)=>a.bib-b.bib).map(s => {
-              const lap = lapChanges[s.id] || 0;
-              return (
-                <div key={s.id} className="flex items-center gap-1 text-xs py-1">
-                  <span className="font-bold text-red-500 w-8 text-center">{s.bib}</span>
-                  <span className="flex-1 truncate">{s.name}</span>
-                  <div className="flex gap-0.5">
-                    <Lb on={lap===-1} c="red" onClick={()=>setLap(s.id,-1)}>-1</Lb>
-                    <Lb on={lap===0} c="zinc" onClick={()=>setLap(s.id,0)}>=</Lb>
-                    <Lb on={lap===1} c="emerald" onClick={()=>setLap(s.id,1)}>+1</Lb>
+          <div className="mt-2 border border-zinc-800 bg-black p-1">
+            <input value={lapQuery} onChange={e=>setLapQuery(e.target.value)} inputMode="numeric"
+              placeholder="Filtrer dossard / nom…"
+              className="w-full bg-zinc-900 border border-zinc-700 px-2 py-2 text-sm mb-1 outline-none focus:border-red-500" />
+            <div className="max-h-64 overflow-y-auto space-y-px">
+              {lapList.map(s => {
+                const lap = lapChanges[s.id] || 0;
+                return (
+                  <div key={s.id} className="flex items-center gap-1 text-xs py-1">
+                    <span className="font-bold text-red-500 w-8 text-center">{s.bib}</span>
+                    <span className="flex-1 truncate">{s.name}</span>
+                    <div className="flex gap-0.5">
+                      <Lb on={lap===-1} c="red" onClick={()=>setLap(s.id,-1)}>-1</Lb>
+                      <Lb on={lap===0} c="zinc" onClick={()=>setLap(s.id,0)}>=</Lb>
+                      <Lb on={lap===1} c="emerald" onClick={()=>setLap(s.id,1)}>+1</Lb>
+                    </div>
+                    <div className="flex gap-0.5 ml-1">
+                      <Lb on={s.status==='DNF'} c="amber" onClick={()=>setStatus(s.id,'DNF')}>DNF</Lb>
+                      <Lb on={s.status==='DSQ'} c="red" onClick={()=>setStatus(s.id,'DSQ')}>DSQ</Lb>
+                    </div>
                   </div>
-                  <div className="flex gap-0.5 ml-1">
-                    <Lb on={s.status==='DNF'} c="amber" onClick={()=>setStatus(s.id,'DNF')}>DNF</Lb>
-                    <Lb on={s.status==='DSQ'} c="red" onClick={()=>setStatus(s.id,'DSQ')}>DSQ</Lb>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
       <div className="h-4" />
+    </div>
+  );
+}
+
+function Info({ label, value, accent }) {
+  return (
+    <div className="bg-zinc-950 py-1.5">
+      <div className="text-[8px] text-zinc-500 uppercase tracking-wider">{label}</div>
+      <div className={`text-lg font-bold leading-none ${accent ? 'text-red-500' : 'text-zinc-200'}`}>{value}</div>
     </div>
   );
 }
@@ -548,102 +628,120 @@ function Lb({ on, c, onClick, children }) {
 }
 
 // ============================================================
-// SPRINT INPUT
+// FAST SPRINT INPUT — mode course (clavier num, dossard d'abord, auto-avance)
 // ============================================================
-function SprintInput({ sprint, skaters, favorites, existing, onSubmit }) {
+function FastSprintInput({ sprint, skaters, favorites, existing, onSubmit }) {
   const slots = sprint.isFinal ? 3 : 2;
-  const [picks, setPicks] = useState(() => existing ? Array.from({length:slots},(_, i)=>existing.positions[i]||null) : Array(slots).fill(null));
-  useEffect(() => { setPicks(existing ? Array.from({length:slots},(_, i)=>existing.positions[i]||null) : Array(slots).fill(null)); }, [sprint.id]);
+  const pts = sprint.isFinal ? [3, 2, 1] : [2, 1];
+  const init = () => existing ? Array.from({ length: slots }, (_, i) => existing.positions[i] || null) : Array(slots).fill(null);
+  const [picks, setPicks] = useState(init);
+  const [active, setActive] = useState(() => { const p = init(); const e = p.findIndex(x => !x); return e === -1 ? 0 : e; });
+  const [query, setQuery] = useState('');
+  const [numeric, setNumeric] = useState(true);
+  const inputRef = useRef(null);
 
-  const update = (i, id) => setPicks(p => { const c = [...p]; c[i] = id; return c; });
-  const pts = sprint.isFinal ? [3,2,1] : [2,1];
+  useEffect(() => {
+    const p = init();
+    setPicks(p);
+    const e = p.findIndex(x => !x);
+    setActive(e === -1 ? 0 : e);
+    setQuery('');
+  }, [sprint.id]);
 
-  const onVoice = (transcript) => {
-    const found = parseVoiceTranscript(transcript, skaters);
-    const np = Array(slots).fill(null);
-    for (let i = 0; i < Math.min(slots, found.length); i++) np[i] = found[i].id;
-    setPicks(np);
-    setTimeout(() => onSubmit(np), 500);
+  const excludeIds = picks.filter((p, i) => p && i !== active);
+  const results = useMemo(() => {
+    const avail = skaters.filter(s => !excludeIds.includes(s.id));
+    let res = searchSkaters(avail, query);
+    if (!query) { const f = res.filter(s => favorites.includes(s.id)); res = [...f, ...res.filter(s => !favorites.includes(s.id))]; }
+    return res.slice(0, 12);
+  }, [skaters, query, picks, active, favorites]);
+
+  const allFilled = picks.every(Boolean);
+
+  const selectSkater = (id) => {
+    const c = [...picks];
+    c[active] = id;
+    setPicks(c);
+    setQuery('');
+    let next = -1;
+    for (let i = 0; i < slots; i++) { if (!c[i]) { next = i; break; } }
+    if (next !== -1) setActive(next);
+    requestAnimationFrame(() => inputRef.current && inputRef.current.focus());
+  };
+  const clearSlot = (i) => {
+    setPicks(prev => { const c = [...prev]; c[i] = null; return c; });
+    setActive(i);
+    requestAnimationFrame(() => inputRef.current && inputRef.current.focus());
+  };
+  const onKey = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (results[0]) selectSkater(results[0].id);
+      else if (picks.every(Boolean)) onSubmit(picks);
+    }
   };
 
   return (
     <div>
-      <div className="space-y-2">
-        {picks.map((id, i) => (
-          <PositionRow key={i} position={i+1} points={pts[i]} currentId={id} skaters={skaters} favorites={favorites}
-            onChange={(nid)=>update(i,nid)} excludeIds={picks.filter((p,idx)=>idx!==i&&p)} />
-        ))}
-      </div>
-      <div className="flex gap-2 mt-3">
-        <VoiceButton onResult={onVoice} />
-        <button onClick={() => onSubmit(picks)}
-          className="flex-1 py-3 bg-red-600 active:bg-red-500 text-white text-base font-bold uppercase tracking-wider">
-          {existing ? 'Mettre à jour' : 'Valider'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PositionRow({ position, points, currentId, skaters, favorites, onChange, excludeIds }) {
-  const [query, setQuery] = useState('');
-  const [open, setOpen] = useState(false);
-  const current = skaters.find(s => s.id === currentId);
-  const results = useMemo(() => {
-    const avail = skaters.filter(s => !excludeIds.includes(s.id));
-    let res = searchSkaters(avail, query);
-    if (!query) { const f = res.filter(s=>favorites.includes(s.id)); res = [...f, ...res.filter(s=>!favorites.includes(s.id))]; }
-    return res.slice(0, 10);
-  }, [skaters, query, excludeIds, favorites]);
-
-  return (
-    <div className="flex items-stretch gap-2">
-      <div className="w-11 flex flex-col items-center justify-center bg-zinc-900 border border-zinc-800">
-        <div className="text-[8px] text-zinc-500">P°</div>
-        <div className="text-xl font-bold leading-none">{position}</div>
-      </div>
-      <div className="flex-1 relative">
-        {current ? (
-          <div className="flex items-center gap-2 px-2 py-2 border border-zinc-700 bg-zinc-900 h-full">
-            <span className="font-bold text-red-500">#{current.bib}</span>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm truncate">{current.name}</div>
-              <div className="text-[10px] truncate" style={{color:clubColor(current.club)}}>{clubShort(current.club)}</div>
+      {/* slots positions */}
+      <div className="space-y-1.5">
+        {picks.map((id, i) => {
+          const sk = skaters.find(s => s.id === id);
+          const isActive = i === active;
+          return (
+            <div key={i}
+              onClick={() => { setActive(i); requestAnimationFrame(() => inputRef.current && inputRef.current.focus()); }}
+              className={`flex items-center gap-2 px-2 py-2.5 border ${isActive ? 'border-red-500 bg-red-500/10' : sk ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-800'}`}>
+              <span className="w-9 text-center shrink-0">
+                <span className="block text-[8px] text-zinc-500 leading-none">P°</span>
+                <span className="text-xl font-bold leading-none">{i + 1}</span>
+              </span>
+              {sk ? (
+                <span className="flex-1 min-w-0 flex items-baseline gap-2">
+                  <span className="font-bold text-red-500 text-lg">{sk.bib}</span>
+                  <span className="text-sm truncate">{sk.name}</span>
+                </span>
+              ) : (
+                <span className="flex-1 text-sm text-zinc-600">{isActive ? '→ saisie en cours' : 'vide'}</span>
+              )}
+              <span className="text-red-500 font-bold shrink-0">+{pts[i]}</span>
+              {sk && <button onClick={(e) => { e.stopPropagation(); clearSlot(i); }} className="text-zinc-500 active:text-red-500 px-1 shrink-0">✕</button>}
             </div>
-            <span className="text-xs">{flag(current.nat)}</span>
-            <button onClick={() => { onChange(null); setQuery(''); }} className="text-zinc-500 active:text-red-500 px-1">✕</button>
-          </div>
-        ) : (
-          <>
-            <input type="text" value={query} inputMode="search"
-              onChange={e => { setQuery(e.target.value); setOpen(true); }}
-              onFocus={() => setOpen(true)} onBlur={() => setTimeout(()=>setOpen(false), 200)}
-              placeholder="Dossard ou nom…"
-              className="w-full bg-zinc-900 border border-zinc-700 px-3 py-3 text-base focus:border-red-500 outline-none" />
-            {open && results.length > 0 && (
-              <div className="absolute z-20 left-0 right-0 top-full mt-px bg-black border border-zinc-700 max-h-72 overflow-y-auto">
-                {results.map(s => (
-                  <button key={s.id} onMouseDown={e=>e.preventDefault()}
-                    onClick={() => { onChange(s.id); setQuery(''); setOpen(false); }}
-                    className="w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-900 text-left border-b border-zinc-900">
-                    {favorites.includes(s.id) && <span className="text-amber-400 text-xs">★</span>}
-                    <span className="font-bold text-red-500 w-9">#{s.bib}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm truncate">{s.name}</div>
-                      <div className="text-[10px] truncate" style={{color:clubColor(s.club)}}>{clubShort(s.club)}</div>
-                    </div>
-                    <span>{flag(s.nat)}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </>
-        )}
+          );
+        })}
       </div>
-      <div className="w-10 flex flex-col items-center justify-center">
-        <div className="text-lg font-bold text-red-500 leading-none">+{points}</div>
-        <div className="text-[8px] text-zinc-500">pts</div>
+
+      {/* champ de saisie */}
+      <div className="flex gap-2 mt-2">
+        <input ref={inputRef} value={query} inputMode={numeric ? 'numeric' : 'text'} autoFocus
+          onChange={e => setQuery(e.target.value)} onKeyDown={onKey}
+          placeholder={numeric ? `N° dossard → P${active + 1}` : `Nom → P${active + 1}`}
+          className="flex-1 bg-zinc-900 border border-zinc-700 px-3 py-3 text-lg focus:border-red-500 outline-none" />
+        <button onClick={() => setNumeric(n => !n)}
+          className="w-14 border border-zinc-700 text-xs text-zinc-400 active:bg-zinc-800">{numeric ? 'ABC' : '123'}</button>
       </div>
+
+      {/* suggestions (uniquement quand on tape) */}
+      {query ? (
+        <div className="mt-1 border border-zinc-800 max-h-56 overflow-y-auto">
+          {results.length ? results.map(s => (
+            <button key={s.id} onClick={() => selectSkater(s.id)}
+              className="w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-900 border-b border-zinc-900 text-left">
+              {favorites.includes(s.id) && <span className="text-amber-400 text-xs">★</span>}
+              <span className="font-bold text-red-500 w-9 text-base">{s.bib}</span>
+              <span className="flex-1 truncate text-sm">{s.name}</span>
+              <span className="text-[10px] truncate max-w-[80px]" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</span>
+            </button>
+          )) : <div className="px-2 py-3 text-zinc-600 text-xs">Aucun coureur pour « {query} »</div>}
+        </div>
+      ) : (
+        <div className="mt-1 text-[10px] text-zinc-600">Tape le dossard puis ⏎ : remplit P{active + 1} et passe au suivant.</div>
+      )}
+
+      <button onClick={() => onSubmit(picks)} disabled={!picks.some(Boolean)}
+        className="w-full mt-2 py-3.5 bg-red-600 active:bg-red-500 disabled:opacity-40 text-white text-lg font-bold uppercase tracking-wider">
+        {existing ? 'Mettre à jour' : 'Valider'}{allFilled ? ' ✓' : ''}
+      </button>
     </div>
   );
 }
@@ -704,13 +802,17 @@ function VoiceButton({ onResult }) {
 // ============================================================
 // TAB : CLASSEMENT
 // ============================================================
-function ClassementTab({ ranking, teamRanking, favorites }) {
+function ClassementTab({ ranking, teamRanking, favorites, pointsInfo }) {
   const [view, setView] = useState('indiv'); // indiv | team
   return (
     <div className="p-4">
-      <div className="grid grid-cols-2 gap-1 mb-3">
+      <div className="grid grid-cols-2 gap-1 mb-2">
         <button onClick={()=>setView('indiv')} className={`py-2 text-xs uppercase tracking-wider border ${view==='indiv'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>Individuel</button>
         <button onClick={()=>setView('team')} className={`py-2 text-xs uppercase tracking-wider border ${view==='team'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>Équipes</button>
+      </div>
+      <div className="flex justify-between items-center text-[10px] text-zinc-500 mb-2 px-1">
+        <span>{pointsInfo.remaining} sprint{pointsInfo.remaining>1?'s':''} restant{pointsInfo.remaining>1?'s':''}</span>
+        <span><span className="text-zinc-300 font-bold">{pointsInfo.total}</span> pts à distribuer · max <span className="text-zinc-300 font-bold">{pointsInfo.maxSolo}</span> pour 1 coureur</span>
       </div>
 
       {view === 'indiv' ? (
@@ -723,6 +825,10 @@ function ClassementTab({ ranking, teamRanking, favorites }) {
                 leader ? 'border-red-500 bg-red-950/30' : i<3&&!r.statusVoid ? 'border-zinc-500 bg-zinc-900/50' :
                 r.statusVoid ? 'border-zinc-800 opacity-40' : r.lappedOut ? 'border-amber-700 bg-amber-950/20' : 'border-zinc-800'}`}>
                 <div className={`w-6 text-right font-bold ${leader?'text-red-500':'text-zinc-400'}`}>{r.rank}</div>
+                <div className="w-4 text-center text-xs">
+                  {r.move > 0 && <span className="text-emerald-400">▲</span>}
+                  {r.move < 0 && <span className="text-red-400">▼</span>}
+                </div>
                 <div className="font-bold text-red-500 w-9 text-center text-sm">{r.bib}</div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm truncate flex items-center gap-1">
@@ -915,5 +1021,3 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
 </html>
-
-
