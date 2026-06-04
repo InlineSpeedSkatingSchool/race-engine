@@ -344,6 +344,13 @@ function App() {
     if (sk && sk.status !== st) showToast(`${st} · ${sk.bib} ${sk.name}`, 'loss');
   };
   const toggleFav = (id) => setFavorites(prev => prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]);
+  const coachClub = (club) => {
+    const ids = skaters.filter(s => s.club === club).map(s => s.id);
+    setFavorites(prev => {
+      const allIn = ids.every(id => prev.includes(id));
+      return allIn ? prev.filter(id => !ids.includes(id)) : Array.from(new Set([...prev, ...ids]));
+    });
+  };
   const importSkaters = (list) => { setSkaters(list); resetRace(); setShowImport(false); };
 
   const ranking = useMemo(() => computeRanking(skaters, sprintResults, lapChanges), [skaters, sprintResults, lapChanges]);
@@ -372,6 +379,7 @@ function App() {
   }, [config, sprintResults]);
 
   const teamRanking = useMemo(() => computeTeamRanking(ranking), [ranking]);
+  const pointsById = useMemo(() => { const m = {}; ranking.forEach(r => { m[r.id] = r.points; }); return m; }, [ranking]);
   const activeSprint = config.sprints[activeSprintIdx];
   const recordedCount = sprintResults.length;
 
@@ -392,10 +400,10 @@ function App() {
       {/* CONTENT */}
       <main className="flex-1 overflow-y-auto">
         {tab === 'course' && (
-          <CourseTab {...{ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, favorites, toggleFav, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab }} />
+          <CourseTab {...{ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, favorites, toggleFav, coachClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }} />
         )}
         {tab === 'saisie' && (
-          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus, pointsInfo }} />
+          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }} />
         )}
         {tab === 'classement' && (
           <ClassementTab {...{ ranking: rankingWithMove, teamRanking, favorites, pointsInfo }} />
@@ -433,12 +441,93 @@ function App() {
 }
 
 // ============================================================
+// COUREURS COACHÉS — base du Coach Assistant
+// ============================================================
+function CoachedSection({ skaters, favorites, toggleFav, coachClub, pointsById }) {
+  const [q, setQ] = useState('');
+  const [byTeam, setByTeam] = useState(false);
+  const coached = skaters.filter(s => favorites.includes(s.id)).sort((a, b) => a.bib - b.bib);
+  const results = q ? searchSkaters(skaters.filter(s => !favorites.includes(s.id)), q).slice(0, 8) : [];
+
+  // clubs avec ≥1 coureur, triés
+  const clubs = useMemo(() => {
+    const m = {};
+    skaters.forEach(s => { const c = s.club || '—'; (m[c] = m[c] || []).push(s); });
+    return Object.entries(m).map(([club, list]) => ({
+      club, count: list.length,
+      coachedCount: list.filter(s => favorites.includes(s.id)).length,
+    })).sort((a, b) => b.count - a.count || a.club.localeCompare(b.club));
+  }, [skaters, favorites]);
+
+  return (
+    <div className="border border-amber-900/50 bg-amber-950/10 p-3">
+      <div className="text-[10px] tracking-[0.25em] text-amber-400 uppercase mb-2">⭐ Mes coureurs coachés · {coached.length}</div>
+
+      {coached.length > 0 ? (
+        <div className="flex flex-wrap gap-1 mb-2">
+          {coached.map(s => (
+            <button key={s.id} onClick={() => toggleFav(s.id)}
+              className="flex items-center gap-1 px-2 py-1 bg-amber-900/30 border border-amber-800 text-xs">
+              <span className="font-bold text-red-400">{s.bib}</span>
+              <span className="truncate max-w-[90px]">{s.name}</span>
+              <span className="text-amber-400 ml-0.5">✕</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-zinc-500 mb-2">Sélectionne les coureurs que tu suis : ils remonteront en haut des menus de saisie.</div>
+      )}
+
+      {/* recherche pour ajouter */}
+      <input value={q} onChange={e => setQ(e.target.value)} inputMode="numeric"
+        placeholder="Ajouter un coureur (dossard / nom)…"
+        className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-amber-500" />
+      {results.length > 0 && (
+        <div className="mt-1 border border-zinc-800 max-h-48 overflow-y-auto">
+          {results.map(s => (
+            <button key={s.id} onClick={() => { toggleFav(s.id); setQ(''); }}
+              className="w-full flex items-center gap-2 px-2 py-2 active:bg-zinc-900 border-b border-zinc-900 text-left text-sm">
+              <span className="font-bold text-red-500 w-9">{s.bib}</span>
+              <span className="flex-1 truncate">{s.name}</span>
+              <span className="text-[10px] truncate max-w-[80px]" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</span>
+              <span className="text-amber-400">+⭐</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* coacher une équipe entière */}
+      <button onClick={() => setByTeam(o => !o)}
+        className="w-full py-1.5 mt-2 border border-zinc-800 text-zinc-400 text-[10px] uppercase tracking-wider">
+        {byTeam ? 'Masquer' : 'Coacher une équipe entière'}
+      </button>
+      {byTeam && (
+        <div className="mt-1 border border-zinc-800 max-h-56 overflow-y-auto">
+          {clubs.map(c => (
+            <button key={c.club} onClick={() => coachClub(c.club)}
+              className={`w-full flex items-center gap-2 px-2 py-2 border-b border-zinc-900 text-left text-xs ${c.coachedCount === c.count ? 'bg-amber-950/30' : ''}`}>
+              <span className="flex-1 truncate" style={{ color: clubColor(c.club) }}>{clubShort(c.club)}</span>
+              <span className="text-zinc-600">×{c.count}</span>
+              <span className={c.coachedCount > 0 ? 'text-amber-400' : 'text-zinc-700'}>
+                {c.coachedCount === c.count ? '⭐ tous' : c.coachedCount > 0 ? `⭐ ${c.coachedCount}/${c.count}` : '+⭐'}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // TAB : COURSE (config + schéma + liste)
 // ============================================================
-function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, favorites, toggleFav, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab }) {
+function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, favorites, toggleFav, coachClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }) {
   const [listOpen, setListOpen] = useState(false);
   return (
     <div className="p-4 space-y-5">
+      <CoachedSection {...{ skaters, favorites, toggleFav, coachClub, pointsById }} />
+
       <Block title="Configuration course">
         <Choice label="Catégorie" options={CATEGORIES} value={category} onChange={onCat} />
         <Choice label="Discipline" options={DISCIPLINES} value={discipline} onChange={onDisc} />
@@ -498,7 +587,7 @@ function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, 
         </button>
         <button onClick={() => setListOpen(o => !o)}
           className="w-full py-2 mt-1 border border-zinc-700 text-zinc-400 text-xs uppercase tracking-wider">
-          {listOpen ? 'Masquer' : 'Voir / gérer'} la liste · ★ favoris
+          {listOpen ? 'Masquer' : 'Voir / gérer'} la liste · ⭐ coacher
         </button>
         {listOpen && (
           <div className="mt-2 max-h-80 overflow-y-auto space-y-px border border-zinc-800 p-1">
@@ -529,12 +618,11 @@ function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, 
 // ============================================================
 // TAB : SAISIE (sprint actif + tours/statuts)
 // ============================================================
-function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus, pointsInfo }) {
+function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, favorites, sprintResults, recordSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }) {
   const [lapsOpen, setLapsOpen] = useState(false);
   const [lapQuery, setLapQuery] = useState('');
   if (!activeSprint) return <div className="p-4 text-zinc-500 text-sm">Aucun sprint configuré.</div>;
   const existing = sprintResults.find(r => r.sprintId === activeSprint.id);
-  const nextSprint = config.sprints[activeSprintIdx + 1];
   const lapList = lapQuery ? searchSkaters(skaters, lapQuery) : skaters.slice().sort((a,b)=>a.bib-b.bib);
 
   return (
@@ -542,9 +630,9 @@ function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, 
       {/* bandeau info course */}
       <div className="grid grid-cols-4 gap-px bg-zinc-800 border border-zinc-800 text-center">
         <Info label="Sprint" value={activeSprint.label} accent />
-        <Info label="Suivant" value={nextSprint ? nextSprint.label : '—'} />
         <Info label="Sprints rest." value={pointsInfo.remaining} />
-        <Info label="Pts dispo" value={pointsInfo.total} />
+        <Info label="Pts max coureur" value={pointsInfo.maxSolo} />
+        <Info label="Pts totaux rest." value={pointsInfo.total} />
       </div>
 
       {/* nav sprint */}
@@ -564,7 +652,7 @@ function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, 
           className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">→</button>
       </div>
 
-      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} favorites={favorites}
+      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} favorites={favorites} pointsById={pointsById}
         existing={existing}
         onSubmit={(positions) => {
           recordSprint(activeSprint.id, activeSprint.isFinal, positions);
@@ -628,58 +716,61 @@ function Lb({ on, c, onClick, children }) {
 }
 
 // ============================================================
-// FAST SPRINT INPUT — mode course (clavier num, dossard d'abord, auto-avance)
+// FAST SPRINT INPUT — menu déroulant intelligent au clic
+// Ordre : ⭐ coachés → 🔥 marqueurs → reste (équipe puis dossard)
 // ============================================================
-function FastSprintInput({ sprint, skaters, favorites, existing, onSubmit }) {
+function orderedCandidates(skaters, favorites, pointsById, query, excludeIds) {
+  const avail = skaters.filter(s => !excludeIds.includes(s.id));
+  if (query) return searchSkaters(avail, query);
+  const coached = [], scored = [], rest = [];
+  avail.forEach(s => {
+    if (favorites.includes(s.id)) coached.push(s);
+    else if ((pointsById[s.id] || 0) > 0) scored.push(s);
+    else rest.push(s);
+  });
+  coached.sort((a, b) => (pointsById[b.id] || 0) - (pointsById[a.id] || 0) || a.bib - b.bib);
+  scored.sort((a, b) => (pointsById[b.id] || 0) - (pointsById[a.id] || 0));
+  rest.sort((a, b) => (a.club || '').localeCompare(b.club || '') || a.bib - b.bib);
+  return [...coached, ...scored, ...rest];
+}
+
+function FastSprintInput({ sprint, skaters, favorites, pointsById, existing, onSubmit }) {
   const slots = sprint.isFinal ? 3 : 2;
   const pts = sprint.isFinal ? [3, 2, 1] : [2, 1];
   const init = () => existing ? Array.from({ length: slots }, (_, i) => existing.positions[i] || null) : Array(slots).fill(null);
   const [picks, setPicks] = useState(init);
-  const [active, setActive] = useState(() => { const p = init(); const e = p.findIndex(x => !x); return e === -1 ? 0 : e; });
+  const [openSlot, setOpenSlot] = useState(0); // slot dont le menu est ouvert (0 par défaut)
   const [query, setQuery] = useState('');
-  const [numeric, setNumeric] = useState(true);
-  const inputRef = useRef(null);
 
   useEffect(() => {
     const p = init();
     setPicks(p);
     const e = p.findIndex(x => !x);
-    setActive(e === -1 ? 0 : e);
+    setOpenSlot(e === -1 ? null : e);
     setQuery('');
   }, [sprint.id]);
 
-  const excludeIds = picks.filter((p, i) => p && i !== active);
-  const results = useMemo(() => {
-    const avail = skaters.filter(s => !excludeIds.includes(s.id));
-    let res = searchSkaters(avail, query);
-    if (!query) { const f = res.filter(s => favorites.includes(s.id)); res = [...f, ...res.filter(s => !favorites.includes(s.id))]; }
-    return res.slice(0, 12);
-  }, [skaters, query, picks, active, favorites]);
-
-  const allFilled = picks.every(Boolean);
+  const excludeIds = picks.filter((p, i) => p && i !== openSlot);
+  const candidates = useMemo(
+    () => orderedCandidates(skaters, favorites, pointsById, query, excludeIds).slice(0, 60),
+    [skaters, favorites, pointsById, query, picks, openSlot]
+  );
 
   const selectSkater = (id) => {
     const c = [...picks];
-    c[active] = id;
+    c[openSlot] = id;
     setPicks(c);
     setQuery('');
     let next = -1;
     for (let i = 0; i < slots; i++) { if (!c[i]) { next = i; break; } }
-    if (next !== -1) setActive(next);
-    requestAnimationFrame(() => inputRef.current && inputRef.current.focus());
+    setOpenSlot(next); // null si tout rempli → menu se ferme
   };
   const clearSlot = (i) => {
     setPicks(prev => { const c = [...prev]; c[i] = null; return c; });
-    setActive(i);
-    requestAnimationFrame(() => inputRef.current && inputRef.current.focus());
+    setQuery('');
+    setOpenSlot(i);
   };
-  const onKey = (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (results[0]) selectSkater(results[0].id);
-      else if (picks.every(Boolean)) onSubmit(picks);
-    }
-  };
+  const allFilled = picks.every(Boolean);
 
   return (
     <div>
@@ -687,55 +778,64 @@ function FastSprintInput({ sprint, skaters, favorites, existing, onSubmit }) {
       <div className="space-y-1.5">
         {picks.map((id, i) => {
           const sk = skaters.find(s => s.id === id);
-          const isActive = i === active;
+          const isOpen = i === openSlot;
           return (
             <div key={i}
-              onClick={() => { setActive(i); requestAnimationFrame(() => inputRef.current && inputRef.current.focus()); }}
-              className={`flex items-center gap-2 px-2 py-2.5 border ${isActive ? 'border-red-500 bg-red-500/10' : sk ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-800'}`}>
+              onClick={() => { setOpenSlot(isOpen ? null : i); setQuery(''); }}
+              className={`flex items-center gap-2 px-2 py-3 border ${isOpen ? 'border-red-500 bg-red-500/10' : sk ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-800'}`}>
               <span className="w-9 text-center shrink-0">
                 <span className="block text-[8px] text-zinc-500 leading-none">P°</span>
                 <span className="text-xl font-bold leading-none">{i + 1}</span>
               </span>
               {sk ? (
-                <span className="flex-1 min-w-0 flex items-baseline gap-2">
-                  <span className="font-bold text-red-500 text-lg">{sk.bib}</span>
-                  <span className="text-sm truncate">{sk.name}</span>
+                <span className="flex-1 min-w-0">
+                  <span className="flex items-baseline gap-2">
+                    <span className="font-bold text-red-500 text-lg">{sk.bib}</span>
+                    <span className="text-sm truncate">{sk.name}</span>
+                  </span>
+                  <span className="text-[10px] truncate block" style={{ color: clubColor(sk.club) }}>{clubShort(sk.club)}</span>
                 </span>
               ) : (
-                <span className="flex-1 text-sm text-zinc-600">{isActive ? '→ saisie en cours' : 'vide'}</span>
+                <span className="flex-1 text-sm text-zinc-500">{isOpen ? '▾ choisis un coureur' : 'appuie pour choisir'}</span>
               )}
               <span className="text-red-500 font-bold shrink-0">+{pts[i]}</span>
-              {sk && <button onClick={(e) => { e.stopPropagation(); clearSlot(i); }} className="text-zinc-500 active:text-red-500 px-1 shrink-0">✕</button>}
+              {sk && <button onClick={(e) => { e.stopPropagation(); clearSlot(i); }} className="text-zinc-500 active:text-red-500 px-2 shrink-0 text-lg">✕</button>}
             </div>
           );
         })}
       </div>
 
-      {/* champ de saisie */}
-      <div className="flex gap-2 mt-2">
-        <input ref={inputRef} value={query} inputMode={numeric ? 'numeric' : 'text'} autoFocus
-          onChange={e => setQuery(e.target.value)} onKeyDown={onKey}
-          placeholder={numeric ? `N° dossard → P${active + 1}` : `Nom → P${active + 1}`}
-          className="flex-1 bg-zinc-900 border border-zinc-700 px-3 py-3 text-lg focus:border-red-500 outline-none" />
-        <button onClick={() => setNumeric(n => !n)}
-          className="w-14 border border-zinc-700 text-xs text-zinc-400 active:bg-zinc-800">{numeric ? 'ABC' : '123'}</button>
-      </div>
-
-      {/* suggestions (uniquement quand on tape) */}
-      {query ? (
-        <div className="mt-1 border border-zinc-800 max-h-56 overflow-y-auto">
-          {results.length ? results.map(s => (
-            <button key={s.id} onClick={() => selectSkater(s.id)}
-              className="w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-900 border-b border-zinc-900 text-left">
-              {favorites.includes(s.id) && <span className="text-amber-400 text-xs">★</span>}
-              <span className="font-bold text-red-500 w-9 text-base">{s.bib}</span>
-              <span className="flex-1 truncate text-sm">{s.name}</span>
-              <span className="text-[10px] truncate max-w-[80px]" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</span>
-            </button>
-          )) : <div className="px-2 py-3 text-zinc-600 text-xs">Aucun coureur pour « {query} »</div>}
+      {/* menu déroulant intelligent */}
+      {openSlot != null && (
+        <div className="mt-2 border border-zinc-700 bg-black">
+          <div className="p-1.5 border-b border-zinc-800 flex items-center gap-2">
+            <span className="text-[10px] text-zinc-500 uppercase shrink-0">P{openSlot + 1} →</span>
+            <input value={query} inputMode="numeric"
+              onChange={e => setQuery(e.target.value)}
+              placeholder="ou tape dossard / nom…"
+              className="flex-1 bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-red-500" />
+          </div>
+          <div className="max-h-[46vh] overflow-y-auto">
+            {candidates.length === 0 && <div className="px-2 py-3 text-zinc-600 text-xs">Aucun coureur.</div>}
+            {candidates.map(s => {
+              const p = pointsById[s.id] || 0;
+              const coached = favorites.includes(s.id);
+              const tag = coached ? '⭐' : (p > 0 ? '🔥' : '');
+              return (
+                <button key={s.id} onClick={() => selectSkater(s.id)}
+                  className={`w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-800 border-b border-zinc-900 text-left ${coached ? 'bg-amber-950/20' : ''}`}>
+                  <span className="w-5 text-center shrink-0">{tag}</span>
+                  <span className="font-bold text-red-500 w-9 text-base shrink-0">{s.bib}</span>
+                  <span className="flex-1 min-w-0">
+                    <span className="text-sm truncate block">{s.name}</span>
+                    <span className="text-[10px] truncate block" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</span>
+                  </span>
+                  <span className={`text-sm font-bold shrink-0 ${p > 0 ? 'text-zinc-200' : 'text-zinc-600'}`}>{p}<span className="text-[8px] text-zinc-600 ml-0.5">pts</span></span>
+                </button>
+              );
+            })}
+          </div>
         </div>
-      ) : (
-        <div className="mt-1 text-[10px] text-zinc-600">Tape le dossard puis ⏎ : remplit P{active + 1} et passe au suivant.</div>
       )}
 
       <button onClick={() => onSubmit(picks)} disabled={!picks.some(Boolean)}
