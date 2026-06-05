@@ -106,14 +106,18 @@ function getRole(roles,s){return roles[nameKey(s)]||null;}
 const ROLE_ICON={mine:'⭐',primary:'🔴',secondary:'🟠'};
 const ROLE_LABEL={mine:'Mes coureurs',primary:'Adversaires principaux',secondary:'Adversaires secondaires'};
 
-function orderedCandidates(skaters, roles, pointsById, query, excludeIds){
+function orderedCandidates(skaters, roles, pointsById, rankById, query, excludeIds){
   const avail=skaters.filter(s=>!excludeIds.includes(s.id));
   if(query)return searchSkaters(avail,query);
-  const tM=[],tP=[],tS=[],tOther=[];
-  avail.forEach(s=>{const r=getRole(roles,s);if(r==='mine')tM.push(s);else if(r==='primary')tP.push(s);else if(r==='secondary')tS.push(s);else tOther.push(s);});
-  const byPts=(a,b)=>(pointsById[b.id]||0)-(pointsById[a.id]||0)||a.bib-b.bib;
-  tM.sort(byPts);tP.sort(byPts);tS.sort(byPts);tOther.sort(byPts); // autres classés par points
-  return [...tM,...tP,...tS,...tOther];
+  // 1) tous les marqueurs (pts>0) triés par classement provisoire réel — quel que soit le rôle
+  const scorers=avail.filter(s=>(pointsById[s.id]||0)>0).sort((a,b)=>(rankById[a.id]||9999)-(rankById[b.id]||9999));
+  // 2) puis les non-marqueurs, groupés par rôle
+  const rest=avail.filter(s=>!((pointsById[s.id]||0)>0));
+  const tM=[],tP=[],tS=[],tO=[];
+  rest.forEach(s=>{const r=getRole(roles,s);if(r==='mine')tM.push(s);else if(r==='primary')tP.push(s);else if(r==='secondary')tS.push(s);else tO.push(s);});
+  const byBib=(a,b)=>a.bib-b.bib;
+  tM.sort(byBib);tP.sort(byBib);tS.sort(byBib);tO.sort(byBib);
+  return [...scorers,...tM,...tP,...tS,...tO];
 }
 
 // ============================================================
@@ -182,6 +186,9 @@ function mergeRosters(batches){
 // PARSEUR LOCAL GÉNÉRIQUE (sans IA) — FFRS, Europe, World Skate, OCR, copier-coller.
 // Stratégie : colonnes d'abord (tab / 2+ espaces), sinon mode "loose".
 const COUNTRY_NAMES={france:'FRA',espagne:'ESP',spain:'ESP',espana:'ESP',italie:'ITA',italy:'ITA',italia:'ITA',allemagne:'GER',germany:'GER',deutschland:'GER',belgique:'BEL',belgium:'BEL',belgie:'BEL',paysbas:'NED',netherlands:'NED',nederland:'NED',portugal:'POR',suisse:'SUI',switzerland:'SUI',schweiz:'SUI',colombie:'COL',colombia:'COL',bresil:'BRA',brazil:'BRA',brasil:'BRA',coree:'KOR',korea:'KOR',japon:'JPN',japan:'JPN',chine:'CHN',china:'CHN',taiwan:'TPE',taipei:'TPE',usa:'USA',etatsunis:'USA',argentine:'ARG',argentina:'ARG',mexique:'MEX',mexico:'MEX',chili:'CHI',chile:'CHI',equateur:'ECU',ecuador:'ECU',venezuela:'VEN',australie:'AUS',australia:'AUS',pologne:'POL',poland:'POL',danemark:'DEN',denmark:'DEN'};
+// Codes pays ISO/IOC 3 lettres (large, international) — pour isoler la nationalité.
+const NAT_CODES=new Set(('FRA ESP ITA GER BEL NED POR SUI GBR IRL USA CAN MEX COL CHI ARG BRA ECU VEN PER PAR URU BOL GUA CRC ESA HON NCA PAN DOM PUR CUB KOR PRK JPN CHN TPE HKG SGP MAS THA INA IND PHI VIE AUS NZL CZE SVK POL AUT HUN SLO CRO SRB DEN SWE NOR FIN EST LAT LTU RUS UKR BLR TUR GRE ROU BUL ISR KAZ RSA NAM EGY MAR ALG TUN ANG KEN COD CIV').split(/\s+/));
+const isNat=(t)=>{const u=(t||'').toUpperCase();return /^[A-Z]{3}$/.test(u)&&NAT_CODES.has(u);};
 const CAT_PREFIX=/\b((SE|JU|VE|CA|MI|BE|PO|DA)[HFG])\b/i;
 const CAT_WORD=/\b(seniors?|sen|juniors?|jun|cadets?|minimes?|espoirs?|veterans?|vet|masters?|youth|u1[0-9]|u2[0-9])\b/i;
 function catNorm(w){w=(w||'').toLowerCase();if(/^(se|sen|senior)/.test(w))return 'Senior';if(/^(ju|jun|junior)/.test(w))return 'Junior';if(/^(ve|vet|master)/.test(w))return 'Veteran';if(/(cadet|minime|youth|^ca|^mi|^be|^po|u1|u2|espoir)/.test(w))return 'Youth';return 'Senior';}
@@ -196,7 +203,7 @@ function parseLocalRoster(text){
     if(!bibM)return;
     const bib=Number(bibM[1]);
     let nat='FRA',cat='Senior';
-    const grabNat=(tok)=>{const u=tok.toUpperCase();const fl=tok.toLowerCase().replace(/[^a-z]/g,'');if(NATS.includes(u)){nat=u;return true;}if(COUNTRY_NAMES[fl]){nat=COUNTRY_NAMES[fl];return true;}return false;};
+    const grabNat=(tok)=>{const u=tok.toUpperCase();const fl=tok.toLowerCase().replace(/[^a-z]/g,'');if(isNat(u)){nat=u;return true;}if(COUNTRY_NAMES[fl]){nat=COUNTRY_NAMES[fl];return true;}return false;};
 
     let fields=raw.split(/ {2,}/).map(f=>f.trim()).filter(Boolean);
     if(fields.length>=3){
@@ -221,13 +228,35 @@ function parseLocalRoster(text){
     }else{
       // ---- mode LOOSE (OCR sale, espaces simples) ----
       let rest=raw.replace(bibM[0],' ').replace(/\b\d{5,}\b/g,' ').replace(/\b\d{2}-\d{2}\b/g,' ').replace(/\b\d+[:.]\d+\b/g,' ').replace(/\s{2,}/g,' ').trim();
-      const nt=rest.match(/\b[A-Z]{3}\b/g);if(nt){const f=nt.find(t=>NATS.includes(t));if(f){nat=f;rest=rest.replace(new RegExp('\\b'+f+'\\b'),' ').trim();}}
-      const lc=rest.toLowerCase();Object.keys(COUNTRY_NAMES).forEach(cn=>{if(lc.includes(cn)){nat=COUNTRY_NAMES[cn];const re=new RegExp(cn,'i');rest=rest.replace(re,' ');}});
+      let toks=rest.split(/\s+/).filter(Boolean);
       let name='',club='';
-      const cm=rest.match(CAT_PREFIX);
-      if(cm){cat=catNorm(cm[1]);name=rest.slice(0,cm.index).trim();club=rest.slice(cm.index+cm[1].length).replace(/^[-\s]+/,'').trim();}
-      else{const cw=rest.match(CAT_WORD);if(cw){cat=catNorm(cw[0]);rest=rest.replace(CAT_WORD,' ');}rest=rest.replace(/\s+\d{1,3}\s*$/,'').replace(/\s{2,}/g,' ').trim();const toks=rest.split(/\s+/).filter(Boolean);if(toks.length<=2)name=toks.join(' ');else{name=toks.slice(0,2).join(' ');club=toks.slice(2).join(' ');}}
-      out.push({bib,name:name||`Coureur ${bib}`,club:club.replace(/\s{2,}/g,' ').trim(),nat,cat});
+      // 1) code pays ISO 3 lettres = séparateur nom / club (gère les noms composés)
+      const natIdx=toks.findIndex(t=>isNat(t));
+      if(natIdx>=0){
+        nat=toks[natIdx].toUpperCase();
+        name=toks.slice(0,natIdx).join(' ').trim();
+        club=toks.slice(natIdx+1).join(' ').trim();
+      }else{
+        // 2) nom de pays en toutes lettres comme séparateur
+        let cnIdx=-1,cnCode=null;
+        for(let i=0;i<toks.length;i++){const fl=toks[i].toLowerCase().replace(/[^a-z]/g,'');if(COUNTRY_NAMES[fl]){cnIdx=i;cnCode=COUNTRY_NAMES[fl];break;}}
+        if(cnIdx>=0){nat=cnCode;name=toks.slice(0,cnIdx).join(' ').trim();club=toks.slice(cnIdx+1).join(' ').trim();}
+        else{
+          // 3) préfixe catégorie FFRS (SEH/JUH/VEH…) = début du club
+          const cm=rest.match(CAT_PREFIX);
+          if(cm){cat=catNorm(cm[1]);name=rest.slice(0,cm.index).trim();club=rest.slice(cm.index+cm[1].length).replace(/^[-\s]+/,'').trim();}
+          else{
+            // 4) défaut : nom = 2 premiers tokens, club = reste
+            let r2=rest.replace(/\s+\d{1,3}\s*$/,'').replace(/\s{2,}/g,' ').trim();const t2=r2.split(/\s+/).filter(Boolean);
+            if(t2.length<=2)name=t2.join(' ');else{name=t2.slice(0,2).join(' ');club=t2.slice(2).join(' ');}
+          }
+        }
+      }
+      // catégorie éventuelle dans le club / nettoyage ordre final
+      const cw=club.match(CAT_PREFIX)||club.match(CAT_WORD);
+      if(cw){cat=catNorm(cw[1]||cw[0]);club=club.replace(CAT_PREFIX,'').replace(CAT_WORD,'').replace(/^[-\s]+/,'').trim();}
+      club=club.replace(/\s+\d{1,3}\s*$/,'').replace(/\s{2,}/g,' ').trim();
+      out.push({bib,name:name||`Coureur ${bib}`,club,nat,cat});
     }
   });
   return out;
@@ -660,7 +689,7 @@ function FastSprintInput({sprint,skaters,roles,pointsById,rankById,existing,onCh
   const [query,setQuery]=useState('');
   useEffect(()=>{const p=init();setPicks(p);const e=p.findIndex(x=>!x);setOpenSlot(e===-1?null:e);setQuery('');},[sprint.id]);
   const excludeIds=picks.filter((p,i)=>p&&i!==openSlot);
-  const candidates=useMemo(()=>orderedCandidates(skaters,roles,pointsById,query,excludeIds).slice(0,60),[skaters,roles,pointsById,query,picks,openSlot]);
+  const candidates=useMemo(()=>orderedCandidates(skaters,roles,pointsById,rankById||{},query,excludeIds).slice(0,60),[skaters,roles,pointsById,rankById,query,picks,openSlot]);
   const selectSkater=(id)=>{
     const wasComplete=picks.every(Boolean);
     const c=[...picks];c[openSlot]=id;setPicks(c);onChange(c);setQuery('');
