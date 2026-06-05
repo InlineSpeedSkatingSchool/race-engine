@@ -3,108 +3,68 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>Race Engine — Course à Points</title>
-
-  <!-- PWA / iOS install -->
+  <title>Race Engine — Coach Assistant</title>
   <meta name="theme-color" content="#0a0a0a" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Race Engine" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%230a0a0a'/%3E%3Crect x='8' y='8' width='84' height='84' fill='none' stroke='%23dc2626' stroke-width='3'/%3E%3Ctext x='50' y='52' font-family='monospace' font-size='42' font-weight='bold' fill='%23dc2626' text-anchor='middle'%3E20%3C/text%3E%3C/svg%3E" />
-
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-
   <style>
     html, body, #root { height: 100%; }
-    body {
-      margin: 0;
-      background: #0a0a0a;
-      color: #fafafa;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-      -webkit-font-smoothing: antialiased;
-      overscroll-behavior: none;
-    }
-    /* zones sûres iOS (encoche + barre du bas) */
+    body { margin:0; background:#0a0a0a; color:#fafafa; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,monospace; -webkit-font-smoothing:antialiased; overscroll-behavior:none; }
     .safe-top { padding-top: env(safe-area-inset-top); }
     .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
     input, select, textarea, button { font-family: inherit; }
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
-    .no-tap-highlight { -webkit-tap-highlight-color: transparent; }
-    @keyframes flash { 0% { background-color: rgba(220,38,38,0.4);} 100% { background-color: transparent; } }
-    .flash { animation: flash 0.6s ease-out; }
+    ::-webkit-scrollbar { width:6px; height:6px; }
+    ::-webkit-scrollbar-thumb { background:#3f3f46; border-radius:3px; }
+    .no-tap { -webkit-tap-highlight-color: transparent; }
   </style>
 </head>
 <body>
   <div id="root"></div>
-
   <script type="text/babel" data-presets="react">
-const { useState, useMemo, useEffect, useRef, useCallback } = React;
+const { useState, useMemo, useEffect, useRef } = React;
 
 // ============================================================
-// MOTEUR DE SCORING
+// MOTEUR — Course à points
 // ============================================================
 const CATEGORIES = ['Senior', 'Junior', 'Youth'];
 const DISCIPLINES = ['Piste', 'Route'];
 
-function getSprintFrequency(category, discipline) {
-  if (category === 'Youth' && discipline === 'Piste') return 2;
-  return 1;
-}
-function getOfficialDistance(category, discipline) {
-  if (category === 'Youth') return 5000;
-  if (discipline === 'Piste') return 5000;
-  return 10000;
-}
-function computeNeutralizedLaps(circuitLength) {
-  const MIN = 999; // tolérance 1 m (333×3 = 999 accepté)
-  let n = 1;
-  while (n * circuitLength < MIN) n++;
-  return n;
-}
+function getSprintFrequency(c, d) { return (c === 'Youth' && d === 'Piste') ? 2 : 1; }
+function getOfficialDistance(c, d) { if (c === 'Youth') return 5000; return d === 'Piste' ? 5000 : 10000; }
+function computeNeutralizedLaps(circ) { let n = 1; while (n * circ < 999) n++; return n; }
 function buildRaceConfig({ category, discipline, totalDistance, circuitLength }) {
   const totalLaps = Math.round(totalDistance / circuitLength);
   const neutralizedLaps = computeNeutralizedLaps(circuitLength);
   const pointedLaps = totalLaps - neutralizedLaps;
   const frequency = getSprintFrequency(category, discipline);
   const sprints = [];
-  if (frequency === 1) {
-    for (let i = pointedLaps; i >= 1; i--)
-      sprints.push({ id: sprints.length + 1, label: `${i}`, lapsRemaining: i, isFinal: false });
-    sprints.push({ id: sprints.length + 1, label: 'ARRIVÉE', lapsRemaining: 0, isFinal: true });
-  } else {
-    for (let i = pointedLaps; i >= 2; i -= 2)
-      sprints.push({ id: sprints.length + 1, label: `${i}`, lapsRemaining: i, isFinal: false });
-    sprints.push({ id: sprints.length + 1, label: 'ARRIVÉE', lapsRemaining: 0, isFinal: true });
-  }
+  const step = frequency === 1 ? 1 : 2;
+  for (let i = pointedLaps; i >= (frequency === 1 ? 1 : 2); i -= step)
+    sprints.push({ id: sprints.length + 1, label: `${i}`, lapsRemaining: i, isFinal: false });
+  sprints.push({ id: sprints.length + 1, label: 'ARRIVÉE', lapsRemaining: 0, isFinal: true });
   const firstSprintDistance = neutralizedLaps * circuitLength;
   const warnings = [];
-  if (firstSprintDistance > 1300) warnings.push(`1er sprint à ${firstSprintDistance} m — vérifier le circuit.`);
+  if (firstSprintDistance > 1300) warnings.push(`1er point à ${firstSprintDistance} m — vérifier le circuit.`);
   return { category, discipline, totalDistance, circuitLength, totalLaps, neutralizedLaps, pointedLaps, frequency, sprints, firstSprintDistance, warnings };
 }
-function pointsForPosition(position, isFinal) {
-  if (isFinal) return position === 1 ? 3 : position === 2 ? 2 : position === 3 ? 1 : 0;
-  return position === 1 ? 2 : position === 2 ? 1 : 0;
+function pointsForPosition(pos, isFinal) {
+  if (isFinal) return pos === 1 ? 3 : pos === 2 ? 2 : pos === 3 ? 1 : 0;
+  return pos === 1 ? 2 : pos === 2 ? 1 : 0;
 }
 function computeRanking(skaters, sprintResults, lapChanges) {
-  const data = skaters.map(s => ({
-    ...s,
-    laps: lapChanges[s.id] || 0,
-    points: 0, lastSprintPosition: null, finishPosition: null,
-    lappedOut: (lapChanges[s.id] || 0) < 0,
-    statusVoid: s.status === 'DNF' || s.status === 'DSQ',
-  }));
-  const sorted = [...sprintResults].sort((a, b) => a.sprintId - b.sprintId);
-  sorted.forEach(sprint => {
-    sprint.positions.forEach((sid, idx) => {
-      const sk = data.find(d => d.id === sid);
-      if (!sk) return;
-      sk.points += pointsForPosition(idx + 1, sprint.isFinal);
+  const data = skaters.map(s => ({ ...s, laps: lapChanges[s.id] || 0, points: 0, lastSprintPosition: null, finishPosition: null, lappedOut: (lapChanges[s.id] || 0) < 0, statusVoid: s.status === 'DNF' || s.status === 'DSQ' }));
+  [...sprintResults].sort((a, b) => a.sprintId - b.sprintId).forEach(sp => {
+    sp.positions.forEach((sid, idx) => {
+      const sk = data.find(d => d.id === sid); if (!sk) return;
+      sk.points += pointsForPosition(idx + 1, sp.isFinal);
       sk.lastSprintPosition = idx + 1;
-      if (sprint.isFinal) sk.finishPosition = idx + 1;
+      if (sp.isFinal) sk.finishPosition = idx + 1;
     });
   });
   data.forEach(d => { if (d.lappedOut || d.statusVoid) d.points = 0; });
@@ -119,110 +79,48 @@ function computeRanking(skaters, sprintResults, lapChanges) {
   });
   return data.map((d, i) => ({ ...d, rank: i + 1 }));
 }
-// Classement par équipe (club) : somme des points des coureurs du club
 function computeTeamRanking(ranking) {
-  const teams = {};
-  ranking.forEach(r => {
-    const club = r.club || '—';
-    if (!teams[club]) teams[club] = { club, points: 0, skaters: [], bestRank: 9999 };
-    teams[club].points += r.points;
-    teams[club].skaters.push(r);
-    teams[club].bestRank = Math.min(teams[club].bestRank, r.rank);
-  });
-  return Object.values(teams)
-    .filter(t => t.skaters.length > 0)
-    .sort((a, b) => b.points - a.points || a.bestRank - b.bestRank);
+  const t = {};
+  ranking.forEach(r => { const c = r.club || '—'; if (!t[c]) t[c] = { club: c, points: 0, skaters: [], bestRank: 9999 }; t[c].points += r.points; t[c].skaters.push(r); t[c].bestRank = Math.min(t[c].bestRank, r.rank); });
+  return Object.values(t).filter(x => x.skaters.length).sort((a, b) => b.points - a.points || a.bestRank - b.bestRank);
 }
 
 // ============================================================
-// SEARCH
+// SEARCH / ROLES / FLAGS
 // ============================================================
-function normalize(str) {
-  return (str || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+function normalize(s){return (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');}
+function scoreMatch(s,nq){const n=normalize(s.name),c=normalize(s.club);if(n.startsWith(nq))return 100;if(n.includes(nq))return 50;if(c.startsWith(nq))return 25;if(c.includes(nq))return 10;return 0;}
+function searchSkaters(skaters,q){
+  if(!q)return skaters;const t=q.trim();
+  if(/^\d+$/.test(t)){const ex=skaters.find(s=>String(s.bib)===t);if(ex)return[ex,...skaters.filter(s=>s!==ex&&String(s.bib).startsWith(t))];return skaters.filter(s=>String(s.bib).startsWith(t));}
+  const nq=normalize(t);return skaters.map(s=>({s,sc:scoreMatch(s,nq)})).filter(x=>x.sc>0).sort((a,b)=>b.sc-a.sc).map(x=>x.s);
 }
-function scoreMatch(s, nq) {
-  const name = normalize(s.name), club = normalize(s.club);
-  if (name.startsWith(nq)) return 100;
-  if (name.includes(nq)) return 50;
-  if (club.startsWith(nq)) return 25;
-  if (club.includes(nq)) return 10;
-  return 0;
-}
-function searchSkaters(skaters, query) {
-  if (!query) return skaters;
-  const q = query.trim();
-  if (/^\d+$/.test(q)) {
-    const exact = skaters.find(s => String(s.bib) === q);
-    if (exact) return [exact, ...skaters.filter(s => s !== exact && String(s.bib).startsWith(q))];
-    return skaters.filter(s => String(s.bib).startsWith(q));
-  }
-  const nq = normalize(q);
-  return skaters.map(s => ({ s, score: scoreMatch(s, nq) })).filter(x => x.score > 0)
-    .sort((a, b) => b.score - a.score).map(x => x.s);
-}
-function resolveVoiceTerm(term, skaters) {
-  const num = term.match(/\d+/);
-  if (num) return skaters.find(s => s.bib === parseInt(num[0], 10)) || null;
-  return searchSkaters(skaters, term)[0] || null;
-}
-// convertit "quarante-sept" -> 47 (FR), tolérant
-const FR_UNITS = { zero:0,zéro:0,un:1,une:1,deux:2,trois:3,quatre:4,cinq:5,six:6,sept:7,huit:8,neuf:9,dix:10,onze:11,douze:12,treize:13,quatorze:14,quinze:15,seize:16,vingt:20,trente:30,quarante:40,cinquante:50,soixante:60,cent:100 };
-function frWordsToNumber(words) {
-  let total = 0, found = false;
-  words.forEach(w => {
-    const k = w.replace(/s$/, '');
-    if (FR_UNITS[k] !== undefined) { total += FR_UNITS[k]; found = true; }
-  });
-  return found ? total : null;
-}
-function parseVoiceTranscript(transcript, skaters) {
-  // découpe par séparateurs explicites
-  const chunks = transcript.replace(/\bet\b|\bpuis\b|\bensuite\b|\bvirgule\b/gi, '|').split('|');
-  const found = [];
-  const tryAdd = (sk) => { if (sk && !found.some(f => f.id === sk.id)) found.push(sk); };
-  chunks.forEach(chunk => {
-    const tokens = chunk.trim().split(/[\s,]+/).filter(Boolean);
-    if (!tokens.length) return;
-    // chiffres directs
-    const directNum = tokens.find(t => /^\d+$/.test(t));
-    if (directNum) { tryAdd(resolveVoiceTerm(directNum, skaters)); return; }
-    // nombre en lettres
-    const asNum = frWordsToNumber(tokens);
-    if (asNum) { const sk = skaters.find(s => s.bib === asNum); if (sk) { tryAdd(sk); return; } }
-    // sinon nom
-    tryAdd(resolveVoiceTerm(chunk.trim(), skaters));
-  });
-  return found;
+const FLAG_MAP={FRA:'🇫🇷',ITA:'🇮🇹',KOR:'🇰🇷',COL:'🇨🇴',GER:'🇩🇪',BRA:'🇧🇷',JPN:'🇯🇵',BEL:'🇧🇪',NED:'🇳🇱',USA:'🇺🇸',ESP:'🇪🇸',CHI:'🇨🇱',ARG:'🇦🇷',CHN:'🇨🇳',TPE:'🇹🇼',ECU:'🇪🇨',VEN:'🇻🇪',MEX:'🇲🇽',AUS:'🇦🇺',NZL:'🇳🇿',POR:'🇵🇹',SUI:'🇨🇭',POL:'🇵🇱',CZE:'🇨🇿',SVK:'🇸🇰',DEN:'🇩🇰'};
+const flag=(c)=>FLAG_MAP[(c||'').toUpperCase()]||'🏁';
+function clubColor(club){if(!club)return '#52525b';let h=0;for(let i=0;i<club.length;i++)h=club.charCodeAt(i)+((h<<5)-h);return `hsl(${Math.abs(h)%360},65%,55%)`;}
+function clubShort(club){if(!club)return '—';return club.split(/[-–]/)[0].trim().split(/\s+/).slice(0,2).join(' ');}
+
+// Identité athlète = nom normalisé (international). Profils futurs = même clé.
+function nameKey(s){return normalize(s.name);}
+function getRole(roles,s){return roles[nameKey(s)]||null;}
+const ROLE_ICON={mine:'⭐',primary:'🔴',secondary:'🟠'};
+const ROLE_LABEL={mine:'Mes coureurs',primary:'Adversaires principaux',secondary:'Adversaires secondaires'};
+
+function orderedCandidates(skaters, roles, pointsById, query, excludeIds){
+  const avail=skaters.filter(s=>!excludeIds.includes(s.id));
+  if(query)return searchSkaters(avail,query);
+  const tM=[],tP=[],tS=[],tSc=[],tR=[];
+  avail.forEach(s=>{const r=getRole(roles,s);if(r==='mine')tM.push(s);else if(r==='primary')tP.push(s);else if(r==='secondary')tS.push(s);else if((pointsById[s.id]||0)>0)tSc.push(s);else tR.push(s);});
+  const byPts=(a,b)=>(pointsById[b.id]||0)-(pointsById[a.id]||0)||a.bib-b.bib;
+  tM.sort(byPts);tP.sort(byPts);tS.sort(byPts);tSc.sort(byPts);
+  tR.sort((a,b)=>(a.club||'').localeCompare(b.club||'')||a.bib-b.bib);
+  return [...tM,...tP,...tS,...tSc,...tR];
 }
 
 // ============================================================
-// FLAGS + couleurs équipe
+// STARTING LIST PAR DÉFAUT (Coupe de France)
 // ============================================================
-const FLAG_MAP = { FRA:'🇫🇷',ITA:'🇮🇹',KOR:'🇰🇷',COL:'🇨🇴',GER:'🇩🇪',BRA:'🇧🇷',JPN:'🇯🇵',BEL:'🇧🇪',NED:'🇳🇱',USA:'🇺🇸',ESP:'🇪🇸',CHI:'🇨🇱',ARG:'🇦🇷',CHN:'🇨🇳',TPE:'🇹🇼',ECU:'🇪🇨',VEN:'🇻🇪',MEX:'🇲🇽',AUS:'🇦🇺',NZL:'🇳🇿',POR:'🇵🇹',SUI:'🇨🇭',POL:'🇵🇱',CZE:'🇨🇿',SVK:'🇸🇰',DEN:'🇩🇰' };
-const flag = (c) => FLAG_MAP[(c||'').toUpperCase()] || '🏁';
-
-// Identité permanente de l'athlète = nom normalisé (marche à l'international).
-// Les profils tactiques futurs utiliseront la même clé.
-function nameKey(s) { return normalize(s.name); }
-function getRole(roles, s) { return roles[nameKey(s)] || null; }
-const ROLE_ICON = { mine: '⭐', primary: '🔴', secondary: '🟠' };
-function clubColor(club) {
-  if (!club) return '#52525b';
-  let h = 0;
-  for (let i = 0; i < club.length; i++) h = club.charCodeAt(i) + ((h << 5) - h);
-  const hue = Math.abs(h) % 360;
-  return `hsl(${hue}, 65%, 55%)`;
-}
-function clubShort(club) {
-  if (!club) return '—';
-  return club.split(/[-–]/)[0].trim().split(/\s+/).slice(0, 2).join(' ');
-}
-
-// ============================================================
-// STARTING LIST RÉELLE (Coupe de France — déjà chargée)
-// club = équipe tactique · nat = drapeau
-// ============================================================
-const DEFAULT_LIST = [
+const DEFAULT_LIST=[
   {bib:464,name:'BEDDIAF Nolan',club:'MANAO - FR SKATE WORLD TEAM',nat:'FRA',cat:'Senior'},
   {bib:449,name:'ROCHER Matthis',club:'MANAO - FR SKATE WORLD TEAM',nat:'FRA',cat:'Senior'},
   {bib:446,name:'COLIN Louis',club:'ROLLER SPORTS SAINT-PIERRAIS',nat:'FRA',cat:'Senior'},
@@ -263,482 +161,391 @@ const DEFAULT_LIST = [
   {bib:443,name:'BERJAMIN Remi',club:'ROLLER CLUB DE BOURGES',nat:'FRA',cat:'Senior'},
   {bib:436,name:'GUYOMARC H Noe',club:'POWERSLIDE',nat:'FRA',cat:'Senior'},
   {bib:424,name:'PAQUET Charles',club:'AM SPORTS',nat:'FRA',cat:'Senior'},
-].map((s, i) => ({ id: i + 1, ...s, status: null }));
+].map((s,i)=>({id:i+1,...s,status:null}));
 
 // ============================================================
-// PERSISTANCE (localStorage)
+// STORAGE + IMPORT
 // ============================================================
-const LS = {
-  get(k, fb) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch { return fb; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
-};
-
-// ============================================================
-// IMPORT (via /api/extract)
-// ============================================================
-async function importViaApi({ imageData, mediaType, text }) {
-  const res = await fetch('/api/extract', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageData, mediaType, text }),
-  });
-  let data;
-  try { data = await res.json(); } catch { throw new Error("Import photo/texte : à activer à l'étape 2 (fonction serveur). La saisie manuelle marche déjà."); }
-  if (!res.ok || data.error) throw new Error(data.error || "Import à activer à l'étape 2 (fonction serveur).");
-  return (data.skaters || []).map((s, i) => ({ id: i + 1, ...s, status: null }));
+const LS={get(k,fb){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch{return fb;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}};
+async function importViaApi({imageData,mediaType,text}){
+  const res=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageData,mediaType,text})});
+  let data; try{data=await res.json();}catch{throw new Error("Import photo/texte : nécessite la fonction serveur (étape 2). La saisie manuelle marche.");}
+  if(!res.ok||data.error)throw new Error(data.error||`Erreur ${res.status}`);
+  return (data.skaters||[]).map((s,i)=>({id:i+1,...s,status:null}));
 }
 
 // ============================================================
-// APP
+// REGISTRE DE MODULES (épreuves)
+// Chaque module = même base coureurs/rôles, moteur propre.
 // ============================================================
-function App() {
-  const [tab, setTab] = useState('saisie'); // course | saisie | classement
-  const [category, setCategory] = useState(() => LS.get('cfg_cat', 'Senior'));
-  const [discipline, setDiscipline] = useState(() => LS.get('cfg_disc', 'Piste'));
-  const [circuitLength, setCircuitLength] = useState(() => LS.get('cfg_circ', 200));
-  const [totalDistance, setTotalDistance] = useState(() => LS.get('cfg_dist', 5000));
+const MODULES=[
+  {id:'points', label:'Course à points', icon:'🏁', operational:true},
+  {id:'1000m', label:'1000 m', icon:'⏱', operational:false},
+  {id:'elimination', label:'Élimination', icon:'❌', operational:false},
+  {id:'500m', label:'500 m', icon:'⚡', operational:false},
+];
+const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
 
-  const [skaters, setSkaters] = useState(() => LS.get('skaters', DEFAULT_LIST));
-  const [roles, setRoles] = useState(() => LS.get('roles', {})); // { nomNormalisé: 'mine'|'primary'|'secondary' }
-  const [sprintResults, setSprintResults] = useState(() => LS.get('sprintResults', []));
-  const [lapChanges, setLapChanges] = useState(() => LS.get('lapChanges', {}));
-  const [activeSprintIdx, setActiveSprintIdx] = useState(0);
-  const [showImport, setShowImport] = useState(false);
-  const [toast, setToast] = useState(null);
-  const [lastSprintId, setLastSprintId] = useState(null); // pour les flèches ↑↓
-  const toastTimer = useRef(null);
+// ============================================================
+// APP (shell)
+// ============================================================
+function App(){
+  const [tab,setTab]=useState('saisie'); // course | coureurs | saisie | classement
+  const [moduleId,setModuleId]=useState(()=>LS.get('moduleId','points'));
 
-  const showToast = (msg, type) => {
-    setToast({ msg, type });
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 2800);
-  };
+  // métadonnées événement
+  const [meta,setMeta]=useState(()=>LS.get('meta',{competition:'',date:new Date().toISOString().slice(0,10),raceType:'Finale'}));
+  // config (points)
+  const [category,setCategory]=useState(()=>LS.get('cfg_cat','Senior'));
+  const [discipline,setDiscipline]=useState(()=>LS.get('cfg_disc','Piste'));
+  const [circuitLength,setCircuitLength]=useState(()=>LS.get('cfg_circ',200));
+  const [totalDistance,setTotalDistance]=useState(()=>LS.get('cfg_dist',5000));
+
+  // base coureurs + rôles
+  const [skaters,setSkaters]=useState(()=>LS.get('skaters',DEFAULT_LIST));
+  const [roles,setRoles]=useState(()=>LS.get('roles',{}));
+
+  // live points
+  const [sprintResults,setSprintResults]=useState(()=>LS.get('sprintResults',[]));
+  const [lapChanges,setLapChanges]=useState(()=>LS.get('lapChanges',{}));
+  const [activeSprintIdx,setActiveSprintIdx]=useState(0);
+
+  // historique
+  const [savedRaces,setSavedRaces]=useState(()=>LS.get('savedRaces',[]));
+
+  const [showImport,setShowImport]=useState(false);
+  const [toast,setToast]=useState(null);
+  const [lastSprintId,setLastSprintId]=useState(null);
+  const toastTimer=useRef(null);
+  const showToast=(msg,type)=>{setToast({msg,type});if(toastTimer.current)clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(null),2800);};
 
   // persistance
-  useEffect(() => LS.set('skaters', skaters), [skaters]);
-  useEffect(() => LS.set('roles', roles), [roles]);
-  // migration unique depuis l'ancien système (coached/favoris par id)
-  useEffect(() => {
-    if (Object.keys(roles).length) return;
-    const oldC = LS.get('coached', LS.get('favorites', []));
-    const oldF = LS.get('favoris', []);
-    if (!oldC.length && !oldF.length) return;
-    const m = {};
-    skaters.forEach(s => {
-      if (oldC.includes(s.id)) m[nameKey(s)] = 'mine';
-      else if (oldF.includes(s.id)) m[nameKey(s)] = 'primary';
-    });
-    if (Object.keys(m).length) setRoles(m);
-  }, []);
-  useEffect(() => LS.set('sprintResults', sprintResults), [sprintResults]);
-  useEffect(() => LS.set('lapChanges', lapChanges), [lapChanges]);
-  useEffect(() => { LS.set('cfg_cat', category); LS.set('cfg_disc', discipline); LS.set('cfg_circ', circuitLength); LS.set('cfg_dist', totalDistance); }, [category, discipline, circuitLength, totalDistance]);
+  useEffect(()=>LS.set('moduleId',moduleId),[moduleId]);
+  useEffect(()=>LS.set('meta',meta),[meta]);
+  useEffect(()=>{LS.set('cfg_cat',category);LS.set('cfg_disc',discipline);LS.set('cfg_circ',circuitLength);LS.set('cfg_dist',totalDistance);},[category,discipline,circuitLength,totalDistance]);
+  useEffect(()=>LS.set('skaters',skaters),[skaters]);
+  useEffect(()=>LS.set('roles',roles),[roles]);
+  useEffect(()=>LS.set('sprintResults',sprintResults),[sprintResults]);
+  useEffect(()=>LS.set('lapChanges',lapChanges),[lapChanges]);
+  useEffect(()=>LS.set('savedRaces',savedRaces),[savedRaces]);
+  // migration unique ancien système
+  useEffect(()=>{
+    if(Object.keys(roles).length)return;
+    const oldC=LS.get('coached',LS.get('favorites',[])),oldF=LS.get('favoris',[]);
+    if(!oldC.length&&!oldF.length)return;
+    const m={};skaters.forEach(s=>{if(oldC.includes(s.id))m[nameKey(s)]='mine';else if(oldF.includes(s.id))m[nameKey(s)]='primary';});
+    if(Object.keys(m).length)setRoles(m);
+  },[]);
 
-  const config = useMemo(() => buildRaceConfig({ category, discipline, totalDistance, circuitLength }), [category, discipline, totalDistance, circuitLength]);
+  const config=useMemo(()=>buildRaceConfig({category,discipline,totalDistance,circuitLength}),[category,discipline,totalDistance,circuitLength]);
+  const resetRace=()=>{setSprintResults([]);setLapChanges({});setActiveSprintIdx(0);setLastSprintId(null);};
+  const onCat=(c)=>{setCategory(c);setTotalDistance(getOfficialDistance(c,discipline));resetRace();};
+  const onDisc=(d)=>{setDiscipline(d);setTotalDistance(getOfficialDistance(category,d));resetRace();};
 
-  const resetRace = () => { setSprintResults([]); setLapChanges({}); setActiveSprintIdx(0); };
-  const onCat = (c) => { setCategory(c); setTotalDistance(getOfficialDistance(c, discipline)); resetRace(); };
-  const onDisc = (d) => { setDiscipline(d); setTotalDistance(getOfficialDistance(category, d)); resetRace(); };
-
-  // Enregistrement LIVE : chaque point indépendant.
-  // positions = tableau des ids (peut contenir des trous → filtrés).
-  // Point vidé (aucune position) → retiré des résultats.
-  const updateSprint = (sprintId, isFinal, positions) => {
-    const filled = positions.filter(Boolean).map(Number);
-    setSprintResults(prev => {
-      const without = prev.filter(s => s.sprintId !== sprintId);
-      if (filled.length === 0) return without;
-      return [...without, { sprintId, isFinal, positions: filled }];
-    });
-    const complete = filled.length === (isFinal ? 3 : 2);
-    if (complete) setLastSprintId(sprintId);
+  const updateSprint=(sprintId,isFinal,positions)=>{
+    const filled=positions.filter(Boolean).map(Number);
+    setSprintResults(prev=>{const without=prev.filter(s=>s.sprintId!==sprintId);if(filled.length===0)return without;return [...without,{sprintId,isFinal,positions:filled}];});
+    if(filled.length===(isFinal?3:2))setLastSprintId(sprintId);
   };
-  const setLap = (id, v) => {
-    setLapChanges(prev => ({ ...prev, [id]: v }));
-    const sk = skaters.find(s => s.id === id);
-    if (sk) {
-      if (v === 1) showToast(`+1 TOUR · ${sk.bib} ${sk.name}`, 'gain');
-      else if (v === -1) showToast(`LAPPÉ · ${sk.bib} ${sk.name} — points annulés`, 'loss');
-    }
-  };
-  const setStatus = (id, st) => {
-    setSkaters(prev => prev.map(s => s.id === id ? { ...s, status: s.status === st ? null : st } : s));
-    const sk = skaters.find(s => s.id === id);
-    if (sk && sk.status !== st) showToast(`${st} · ${sk.bib} ${sk.name}`, 'loss');
-  };
-  const assignRole = (s, role) => setRoles(prev => {
-    const k = nameKey(s); const c = { ...prev };
-    if (c[k] === role) delete c[k]; else c[k] = role;
-    return c;
-  });
-  const assignRoleClub = (club, role) => setRoles(prev => {
-    const c = { ...prev };
-    const members = skaters.filter(s => s.club === club);
-    const allIn = members.every(s => c[nameKey(s)] === role);
-    members.forEach(s => { const k = nameKey(s); if (allIn) delete c[k]; else c[k] = role; });
-    return c;
-  });
-  const importSkaters = (list) => { setSkaters(list); resetRace(); setShowImport(false); };
+  const setLap=(id,v)=>{setLapChanges(prev=>({...prev,[id]:v}));const sk=skaters.find(s=>s.id===id);if(sk){if(v===1)showToast(`+1 TOUR · ${sk.bib} ${sk.name}`,'gain');else if(v===-1)showToast(`LAPPÉ · ${sk.bib} ${sk.name} — points annulés`,'loss');}};
+  const setStatus=(id,st)=>{setSkaters(prev=>prev.map(s=>s.id===id?{...s,status:s.status===st?null:st}:s));const sk=skaters.find(s=>s.id===id);if(sk&&sk.status!==st)showToast(`${st} · ${sk.bib} ${sk.name}`,'loss');};
+  const assignRole=(s,role)=>setRoles(prev=>{const k=nameKey(s),c={...prev};if(c[k]===role)delete c[k];else c[k]=role;return c;});
+  const assignRoleClub=(club,role)=>setRoles(prev=>{const c={...prev};const mem=skaters.filter(s=>s.club===club);const allIn=mem.every(s=>c[nameKey(s)]===role);mem.forEach(s=>{const k=nameKey(s);if(allIn)delete c[k];else c[k]=role;});return c;});
+  const importSkaters=(list)=>{setSkaters(list);resetRace();setShowImport(false);showToast(`${list.length} coureurs importés`,'gain');};
 
-  const ranking = useMemo(() => computeRanking(skaters, sprintResults, lapChanges), [skaters, sprintResults, lapChanges]);
-  // classement AVANT le dernier sprint validé → pour calculer les mouvements ↑↓
-  const prevRanking = useMemo(() => {
-    if (lastSprintId == null) return null;
-    const without = sprintResults.filter(s => s.sprintId !== lastSprintId);
-    if (without.length === sprintResults.length) return null;
-    return computeRanking(skaters, without, lapChanges);
-  }, [skaters, sprintResults, lapChanges, lastSprintId]);
-  const rankingWithMove = useMemo(() => {
-    if (!prevRanking) return ranking.map(r => ({ ...r, move: 0 }));
-    const map = {}; prevRanking.forEach(p => { map[p.id] = p.rank; });
-    return ranking.map(r => ({ ...r, move: map[r.id] != null ? map[r.id] - r.rank : 0 }));
-  }, [ranking, prevRanking]);
-  // points encore distribuables (sprints non encore enregistrés)
-  const pointsInfo = useMemo(() => {
-    const recordedIds = new Set(sprintResults.map(s => s.sprintId));
-    let total = 0, maxSolo = 0;
-    config.sprints.forEach(sp => {
-      if (recordedIds.has(sp.id)) return;
-      total += sp.isFinal ? 6 : 3;       // 3+2+1 ou 2+1
-      maxSolo += sp.isFinal ? 3 : 2;     // ce qu'un seul coureur peut encore rafler
-    });
-    return { total, maxSolo, remaining: config.sprints.length - sprintResults.length };
-  }, [config, sprintResults]);
+  const ranking=useMemo(()=>computeRanking(skaters,sprintResults,lapChanges),[skaters,sprintResults,lapChanges]);
+  const prevRanking=useMemo(()=>{if(lastSprintId==null)return null;const w=sprintResults.filter(s=>s.sprintId!==lastSprintId);if(w.length===sprintResults.length)return null;return computeRanking(skaters,w,lapChanges);},[skaters,sprintResults,lapChanges,lastSprintId]);
+  const rankingWithMove=useMemo(()=>{if(!prevRanking)return ranking.map(r=>({...r,move:0}));const map={};prevRanking.forEach(p=>{map[p.id]=p.rank;});return ranking.map(r=>({...r,move:map[r.id]!=null?map[r.id]-r.rank:0}));},[ranking,prevRanking]);
+  const pointsInfo=useMemo(()=>{const rec=new Set(sprintResults.map(s=>s.sprintId));let total=0,maxSolo=0;config.sprints.forEach(sp=>{if(rec.has(sp.id))return;total+=sp.isFinal?6:3;maxSolo+=sp.isFinal?3:2;});return {total,maxSolo,remaining:config.sprints.length-sprintResults.length};},[config,sprintResults]);
+  const teamRanking=useMemo(()=>computeTeamRanking(ranking),[ranking]);
+  const pointsById=useMemo(()=>{const m={};ranking.forEach(r=>{m[r.id]=r.points;});return m;},[ranking]);
+  const activeSprint=config.sprints[activeSprintIdx];
+  const mod=MODULES.find(m=>m.id===moduleId)||MODULES[0];
 
-  const teamRanking = useMemo(() => computeTeamRanking(ranking), [ranking]);
-  const pointsById = useMemo(() => { const m = {}; ranking.forEach(r => { m[r.id] = r.points; }); return m; }, [ranking]);
-  const activeSprint = config.sprints[activeSprintIdx];
-  const recordedCount = sprintResults.length;
+  // SAUVEGARDE COURSE
+  const saveRace=()=>{
+    const snap={
+      id:Date.now().toString(36),savedAt:new Date().toISOString(),
+      meta:{...meta,category,discipline,circuitLength,totalDistance,module:moduleId},
+      roster:skaters, roles:{...roles},
+      live:{sprintResults,lapChanges},
+      result:ranking.map(r=>({rank:r.rank,bib:r.bib,name:r.name,club:r.club,nat:r.nat,points:r.points,laps:r.laps,status:r.status})),
+    };
+    setSavedRaces(prev=>[snap,...prev]);
+    showToast('Course sauvegardée dans l\'historique','gain');
+  };
+  const loadRace=(snap)=>{
+    setMeta({competition:snap.meta.competition||'',date:snap.meta.date||'',raceType:snap.meta.raceType||''});
+    setModuleId(snap.meta.module||'points');
+    setCategory(snap.meta.category||'Senior');setDiscipline(snap.meta.discipline||'Piste');
+    setCircuitLength(snap.meta.circuitLength||200);setTotalDistance(snap.meta.totalDistance||5000);
+    setSkaters(snap.roster||DEFAULT_LIST);setRoles(snap.roles||{});
+    setSprintResults(snap.live?.sprintResults||[]);setLapChanges(snap.live?.lapChanges||{});
+    setActiveSprintIdx(0);setLastSprintId(null);setTab('saisie');
+    showToast('Course chargée','gain');
+  };
+  const deleteRace=(id)=>setSavedRaces(prev=>prev.filter(r=>r.id!==id));
+
+  const roleCounts=useMemo(()=>{const c={mine:0,primary:0,secondary:0};Object.values(roles).forEach(r=>{if(c[r]!=null)c[r]++;});return c;},[roles]);
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950 no-tap-highlight">
-      {/* HEADER */}
+    <div className="flex flex-col h-full bg-zinc-950 no-tap">
       <header className="safe-top bg-black border-b border-zinc-800 px-4 pt-2 pb-3 flex items-center justify-between shrink-0">
         <div>
-          <div className="text-[9px] tracking-[0.3em] text-red-500 uppercase">Course à Points</div>
-          <h1 className="text-lg font-bold leading-none">RACE ENGINE <span className="text-red-500">/</span> v1</h1>
+          <div className="text-[9px] tracking-[0.3em] text-red-500 uppercase">{mod.icon} {mod.label}</div>
+          <h1 className="text-base font-bold leading-none truncate max-w-[55vw]">{meta.competition || 'RACE ENGINE'}</h1>
         </div>
         <div className="text-right">
           <div className="text-[10px] text-zinc-500 uppercase">{category} · {discipline}</div>
-          <div className="text-xs text-zinc-300">{recordedCount}/{config.sprints.length} sprints</div>
+          <div className="text-xs text-zinc-300">{sprintResults.length}/{config.sprints.length} pts</div>
         </div>
       </header>
 
-      {/* CONTENT */}
       <main className="flex-1 overflow-y-auto">
-        {tab === 'course' && (
-          <CourseTab {...{ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, roles, assignRole, assignRoleClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }} />
-        )}
-        {tab === 'saisie' && (
-          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, roles, sprintResults, updateSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }} />
-        )}
-        {tab === 'classement' && (
-          <ClassementTab {...{ ranking: rankingWithMove, teamRanking, roles, pointsInfo }} />
-        )}
+        {tab==='course' && <SetupScreen {...{meta,setMeta,moduleId,setModuleId,category,discipline,circuitLength,totalDistance,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,config,saveRace,savedRaces,loadRace,deleteRace}} />}
+        {tab==='coureurs' && <CoureursScreen {...{skaters,roles,assignRole,assignRoleClub,setShowImport,roleCounts}} />}
+        {tab==='saisie' && (mod.operational
+          ? <PointsInput {...{config,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById}} />
+          : <ModuleSoon mod={mod} />)}
+        {tab==='classement' && (mod.operational
+          ? <PointsBoard {...{ranking:rankingWithMove,teamRanking,roles,pointsInfo}} />
+          : <ModuleSoon mod={mod} />)}
       </main>
 
-      {/* TOAST prises de tour / statuts */}
       {toast && (
-        <div className={`fixed left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 border-2 text-sm font-bold uppercase tracking-wider flex items-center gap-2 ${
-          toast.type === 'gain' ? 'bg-emerald-950 border-emerald-500 text-emerald-300' : 'bg-red-950 border-red-500 text-red-300'
-        }`} style={{ bottom: 'calc(env(safe-area-inset-bottom) + 72px)', maxWidth: '92vw' }}>
-          <span className="text-lg">{toast.type === 'gain' ? '▲' : '▼'}</span>
-          <span className="truncate">{toast.msg}</span>
+        <div className={`fixed left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 border-2 text-sm font-bold uppercase tracking-wider flex items-center gap-2 ${toast.type==='gain'?'bg-emerald-950 border-emerald-500 text-emerald-300':'bg-red-950 border-red-500 text-red-300'}`} style={{bottom:'calc(env(safe-area-inset-bottom) + 72px)',maxWidth:'92vw'}}>
+          <span className="text-lg">{toast.type==='gain'?'▲':'▼'}</span><span className="truncate">{toast.msg}</span>
         </div>
       )}
 
-      {/* BOTTOM TABS */}
-      <nav className="safe-bottom bg-black border-t border-zinc-800 grid grid-cols-3 shrink-0">
-        {[
-          { id: 'course', label: 'COURSE', icon: '⚙' },
-          { id: 'saisie', label: 'SAISIE', icon: '⏱' },
-          { id: 'classement', label: 'CLASSEMENT', icon: '🏆' },
-        ].map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            className={`py-3 flex flex-col items-center gap-0.5 transition ${tab === t.id ? 'text-red-500' : 'text-zinc-500'}`}>
-            <span className="text-base leading-none">{t.icon}</span>
-            <span className="text-[9px] tracking-wider">{t.label}</span>
+      <nav className="safe-bottom bg-black border-t border-zinc-800 grid grid-cols-4 shrink-0">
+        {[{id:'course',label:'COURSE',icon:'⚙'},{id:'coureurs',label:'COUREURS',icon:'👥'},{id:'saisie',label:'SAISIE',icon:'⏱'},{id:'classement',label:'CLASST',icon:'🏆'}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} className={`py-3 flex flex-col items-center gap-0.5 ${tab===t.id?'text-red-500':'text-zinc-500'}`}>
+            <span className="text-base leading-none">{t.icon}</span><span className="text-[9px] tracking-wider">{t.label}</span>
           </button>
         ))}
       </nav>
 
-      {showImport && <ImportModal onClose={() => setShowImport(false)} onImport={importSkaters} />}
+      {showImport && <ImportModal onClose={()=>setShowImport(false)} onImport={importSkaters} />}
     </div>
   );
 }
 
-// ============================================================
-// ENTOURAGE — 2 zones distinctes : ⭐ Coachés  /  🔥 Favoris
-// ============================================================
-function PickZone({ title, icon, accent, role, roles, assignRole, skaters, placeholder, clubAssign, clubs }) {
-  const [q, setQ] = useState('');
-  const [byTeam, setByTeam] = useState(false);
-  const picked = skaters.filter(s => getRole(roles, s) === role).sort((a, b) => a.bib - b.bib);
-  const results = q ? searchSkaters(skaters.filter(s => getRole(roles, s) !== role), q).slice(0, 8) : [];
-  const tone = {
-    amber: { box: 'border-amber-900/50 bg-amber-950/10', title: 'text-amber-400', chip: 'bg-amber-900/30 border-amber-800' },
-    red: { box: 'border-red-900/50 bg-red-950/10', title: 'text-red-400', chip: 'bg-red-900/25 border-red-800' },
-    orange: { box: 'border-orange-900/40 bg-orange-950/10', title: 'text-orange-400', chip: 'bg-orange-900/25 border-orange-800' },
-  }[accent];
+function ModuleSoon({mod}){
+  return <div className="p-6 text-center text-zinc-500"><div className="text-4xl mb-2">{mod.icon}</div><div className="text-lg font-bold text-zinc-300">{mod.label}</div><div className="text-sm mt-2">Module à venir. L'ossature est prête à l'accueillir : il réutilisera la même base coureurs, les mêmes rôles et le même historique.</div></div>;
+}
 
+// ============================================================
+// ÉCRAN COURSE (réglages + sauvegarde + historique)
+// ============================================================
+function SetupScreen({meta,setMeta,moduleId,setModuleId,category,discipline,circuitLength,totalDistance,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,config,saveRace,savedRaces,loadRace,deleteRace}){
+  const upd=(k,v)=>setMeta(m=>({...m,[k]:v}));
   return (
-    <div className={`border ${tone.box} p-3`}>
-      <div className={`text-[10px] tracking-[0.25em] uppercase mb-2 ${tone.title}`}>{icon} {title} · {picked.length}</div>
-      {picked.length > 0 ? (
-        <div className="flex flex-wrap gap-1 mb-2">
-          {picked.map(s => (
-            <button key={s.id} onClick={() => assignRole(s, role)}
-              className={`flex items-center gap-1 px-2 py-1 border text-xs ${tone.chip}`}>
-              <span className="font-bold text-red-400">{s.bib}</span>
-              <span className="truncate max-w-[90px]">{s.name}</span>
-              <span className={`ml-0.5 ${tone.title}`}>✕</span>
+    <div className="p-4 space-y-5">
+      <Block title="Compétition">
+        <Field label="Nom de la compétition"><input value={meta.competition} onChange={e=>upd('competition',e.target.value)} placeholder="ex : Coupe de France Pontault" className="w-full bg-black border border-zinc-700 px-3 py-2 text-base outline-none focus:border-red-500" /></Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Date"><input type="date" value={meta.date} onChange={e=>upd('date',e.target.value)} className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500" /></Field>
+          <Field label="Type de course">
+            <select value={meta.raceType} onChange={e=>upd('raceType',e.target.value)} className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500">
+              {['Finale','Demi-finale','Série','Manche','Qualif'].map(o=><option key={o}>{o}</option>)}
+            </select>
+          </Field>
+        </div>
+      </Block>
+
+      <Block title="Épreuve (module)">
+        <div className="grid grid-cols-2 gap-1">
+          {MODULES.map(m=>(
+            <button key={m.id} onClick={()=>m.operational&&setModuleId(m.id)} disabled={!m.operational}
+              className={`py-2.5 text-xs border flex flex-col items-center gap-0.5 ${moduleId===m.id?'bg-red-600 border-red-600 text-white':m.operational?'border-zinc-700 text-zinc-300':'border-zinc-800 text-zinc-600'}`}>
+              <span className="text-base">{m.icon}</span>
+              <span>{m.label}{!m.operational && <span className="block text-[8px] text-zinc-600">à venir</span>}</span>
             </button>
           ))}
         </div>
-      ) : (
-        <div className="text-xs text-zinc-500 mb-2">{placeholder}</div>
-      )}
-      <input value={q} onChange={e => setQ(e.target.value)} inputMode="numeric"
-        placeholder="Ajouter (dossard / nom)…"
-        className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-zinc-500" />
-      {results.length > 0 && (
-        <div className="mt-1 border border-zinc-800 max-h-48 overflow-y-auto">
-          {results.map(s => {
-            const cur = getRole(roles, s);
-            return (
-              <button key={s.id} onClick={() => { assignRole(s, role); setQ(''); }}
-                className="w-full flex items-center gap-2 px-2 py-2 active:bg-zinc-900 border-b border-zinc-900 text-left text-sm">
-                <span className="font-bold text-red-500 w-9">{s.bib}</span>
-                <span className="flex-1 truncate">{s.name}</span>
-                {cur && <span className="text-[10px]">{ROLE_ICON[cur]}</span>}
-                <span className="text-[10px] truncate max-w-[70px]" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</span>
-                <span className={tone.title}>+{icon}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {clubAssign && (
-        <>
-          <button onClick={() => setByTeam(o => !o)}
-            className="w-full py-1.5 mt-2 border border-zinc-800 text-zinc-400 text-[10px] uppercase tracking-wider">
-            {byTeam ? 'Masquer' : 'Ajouter une équipe entière'}
-          </button>
-          {byTeam && (
-            <div className="mt-1 border border-zinc-800 max-h-56 overflow-y-auto">
-              {clubs.map(c => (
-                <button key={c.club} onClick={() => clubAssign(c.club, role)}
-                  className={`w-full flex items-center gap-2 px-2 py-2 border-b border-zinc-900 text-left text-xs ${c.pickedCount === c.count ? 'bg-amber-950/30' : ''}`}>
-                  <span className="flex-1 truncate" style={{ color: clubColor(c.club) }}>{clubShort(c.club)}</span>
-                  <span className="text-zinc-600">×{c.count}</span>
-                  <span className={c.pickedCount > 0 ? tone.title : 'text-zinc-700'}>
-                    {c.pickedCount === c.count ? `${icon} tous` : c.pickedCount > 0 ? `${icon} ${c.pickedCount}/${c.count}` : `+${icon}`}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
+      </Block>
 
-function EntourageSection({ skaters, roles, assignRole, assignRoleClub }) {
-  const clubs = useMemo(() => {
-    const m = {};
-    skaters.forEach(s => { const c = s.club || '—'; (m[c] = m[c] || []).push(s); });
-    return Object.entries(m).map(([club, list]) => ({
-      club, count: list.length, pickedCount: list.filter(s => getRole(roles, s) === 'mine').length,
-    })).sort((a, b) => b.count - a.count || a.club.localeCompare(b.club));
-  }, [skaters, roles]);
-
-  return (
-    <div className="space-y-3">
-      <PickZone title="Mes coureurs" icon="⭐" accent="amber" role="mine" roles={roles} assignRole={assignRole}
-        skaters={skaters} clubAssign={assignRoleClub} clubs={clubs}
-        placeholder="Les coureurs que tu coaches et pour qui tu prends des décisions." />
-      <PickZone title="Adversaires principaux" icon="🔴" accent="red" role="primary" roles={roles} assignRole={assignRole}
-        skaters={skaters}
-        placeholder="Les plus dangereux tactiquement pour tes coureurs." />
-      <PickZone title="Adversaires secondaires" icon="🟠" accent="orange" role="secondary" roles={roles} assignRole={assignRole}
-        skaters={skaters}
-        placeholder="Les autres coureurs à surveiller." />
-    </div>
-  );
-}
-
-// ============================================================
-// TAB : COURSE (config + schéma + liste)
-// ============================================================
-function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, roles, assignRole, assignRoleClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }) {
-  const [listOpen, setListOpen] = useState(false);
-  return (
-    <div className="p-4 space-y-5">
-      <EntourageSection {...{ skaters, roles, assignRole, assignRoleClub }} />
-
-      <Block title="Configuration course">
-        <Choice label="Catégorie" options={CATEGORIES} value={category} onChange={onCat} />
-        <Choice label="Discipline" options={DISCIPLINES} value={discipline} onChange={onDisc} />
-        <div>
-          <Lab>Longueur circuit (m)</Lab>
-          <input type="number" inputMode="numeric" value={circuitLength}
-            onChange={e => { setCircuitLength(Number(e.target.value)); resetRace(); }}
-            className="w-full bg-black border border-zinc-700 px-3 py-2 mt-1 text-base focus:border-red-500 outline-none" />
-          <div className="flex gap-1 mt-1">
-            {[200,250,333,400,500].map(v => (
-              <button key={v} onClick={() => { setCircuitLength(v); resetRace(); }}
-                className="flex-1 text-xs py-1.5 border border-zinc-800 active:bg-zinc-800 text-zinc-400">{v}</button>
-            ))}
+      {moduleId==='points' && (
+        <Block title="Réglages course à points">
+          <Choice label="Catégorie" options={CATEGORIES} value={category} onChange={onCat} />
+          <Choice label="Discipline" options={DISCIPLINES} value={discipline} onChange={onDisc} />
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Circuit (m)"><input type="number" inputMode="numeric" value={circuitLength} onChange={e=>{setCircuitLength(Number(e.target.value));resetRace();}} className="w-full bg-black border border-zinc-700 px-2 py-2 text-base outline-none focus:border-red-500" /></Field>
+            <Field label="Distance (m)"><input type="number" inputMode="numeric" value={totalDistance} onChange={e=>{setTotalDistance(Number(e.target.value));resetRace();}} className="w-full bg-black border border-zinc-700 px-2 py-2 text-base outline-none focus:border-red-500" /></Field>
           </div>
-        </div>
-        <div>
-          <Lab>Distance totale (m)</Lab>
-          <input type="number" inputMode="numeric" value={totalDistance}
-            onChange={e => { setTotalDistance(Number(e.target.value)); resetRace(); }}
-            className="w-full bg-black border border-zinc-700 px-3 py-2 mt-1 text-base focus:border-red-500 outline-none" />
-        </div>
-      </Block>
-
-      <Block title="Calcul automatique">
-        <div className="grid grid-cols-2 gap-x-4">
-          <Stat label="Tours totaux" value={config.totalLaps} />
-          <Stat label="Neutralisés" value={config.neutralizedLaps} />
-          <Stat label="1er sprint" value={`${config.firstSprintDistance} m`} />
-          <Stat label="Fréquence" value={config.frequency === 1 ? '1/tour' : '1/2 tours'} />
-        </div>
-        {config.warnings.map((w, i) => (
-          <div key={i} className="mt-2 border-l-2 border-amber-500 bg-amber-950/30 p-2 text-xs text-amber-200">⚠ {w}</div>
-        ))}
-      </Block>
-
-      <Block title={`Schéma des points (${config.sprints.length - 1} + arrivée)`}>
-        <div className="flex flex-wrap gap-1">
-          {config.sprints.map((sp, idx) => {
-            const rec = sprintResults.find(r => r.sprintId === sp.id);
-            return (
-              <button key={sp.id} onClick={() => { setActiveSprintIdx(idx); setTab('saisie'); }}
-                className={`min-w-[38px] py-1.5 px-1.5 text-xs border ${
-                  idx === activeSprintIdx ? 'border-red-500 bg-red-500/10 text-red-400' :
-                  rec ? 'border-emerald-700 bg-emerald-950/40 text-emerald-400' :
-                  'border-zinc-800 text-zinc-500'} ${sp.isFinal ? 'font-bold' : ''}`}>
-                {sp.label}
-              </button>
-            );
-          })}
-        </div>
-      </Block>
-
-      <Block title={`Starting list · ${skaters.length} coureurs`}>
-        <button onClick={() => setShowImport(true)}
-          className="w-full py-2.5 bg-red-600 active:bg-red-500 text-white text-sm font-bold uppercase tracking-wider">
-          ↓ Importer une starting list
-        </button>
-        <button onClick={() => setListOpen(o => !o)}
-          className="w-full py-2 mt-1 border border-zinc-700 text-zinc-400 text-xs uppercase tracking-wider">
-          {listOpen ? 'Masquer' : 'Voir / gérer'} la liste · ⭐ 🔴 🟠 rôles
-        </button>
-        {listOpen && (
-          <div className="mt-2 max-h-80 overflow-y-auto space-y-px border border-zinc-800 p-1">
-            {skaters.slice().sort((a,b)=>{const o={mine:3,primary:2,secondary:1};return (o[getRole(roles,b)]||0)-(o[getRole(roles,a)]||0)||a.bib-b.bib;}).map(s => (
-              <div key={s.id} className="flex items-center gap-1.5 py-1.5 px-1 text-sm">
-                <button onClick={() => assignRole(s,'mine')} className={`text-base ${getRole(roles,s)==='mine' ? '' : 'opacity-25 grayscale'}`}>⭐</button>
-                <button onClick={() => assignRole(s,'primary')} className={`text-base ${getRole(roles,s)==='primary' ? '' : 'opacity-25 grayscale'}`}>🔴</button>
-                <button onClick={() => assignRole(s,'secondary')} className={`text-base ${getRole(roles,s)==='secondary' ? '' : 'opacity-25 grayscale'}`}>🟠</button>
-                <span className="font-bold text-red-500 w-9 text-center">{s.bib}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="truncate">{s.name}</div>
-                  <div className="text-[10px] truncate" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</div>
-                </div>
-                <span>{flag(s.nat)}</span>
-              </div>
-            ))}
+          <div className="flex gap-1">{[200,250,333,400,500].map(v=><button key={v} onClick={()=>{setCircuitLength(v);resetRace();}} className="flex-1 text-xs py-1.5 border border-zinc-800 active:bg-zinc-800 text-zinc-400">{v}</button>)}</div>
+          <div className="grid grid-cols-4 gap-x-3 mt-1">
+            <Stat label="Tours" value={config.totalLaps} /><Stat label="Neutr." value={config.neutralizedLaps} />
+            <Stat label="Points" value={config.sprints.length-1} /><Stat label="Fréq" value={config.frequency===1?'1/t':'1/2t'} />
           </div>
-        )}
-      </Block>
+          {config.warnings.map((w,i)=><div key={i} className="border-l-2 border-amber-500 bg-amber-950/30 p-2 text-xs text-amber-200">⚠ {w}</div>)}
+        </Block>
+      )}
 
-      <button onClick={() => { if (confirm('Réinitialiser tous les résultats de la course ?')) resetRace(); }}
-        className="w-full py-2 border border-zinc-700 text-zinc-500 text-xs uppercase tracking-wider">
-        Reset résultats course
-      </button>
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={saveRace} className="py-3 bg-red-600 active:bg-red-500 text-white text-sm font-bold uppercase tracking-wider">💾 Sauvegarder</button>
+        <button onClick={()=>{if(confirm('Réinitialiser les résultats de la course en cours ?'))resetRace();}} className="py-3 border border-zinc-700 text-zinc-400 text-sm uppercase tracking-wider">Nouveaux résultats</button>
+      </div>
+
+      <Block title={`Historique · ${savedRaces.length} course${savedRaces.length>1?'s':''}`}>
+        {savedRaces.length===0 && <div className="text-xs text-zinc-500">Aucune course sauvegardée. La sauvegarde nourrira plus tard les profils de coureurs et l'analyse tactique.</div>}
+        <div className="space-y-1">
+          {savedRaces.map(r=><HistoryRow key={r.id} race={r} onLoad={loadRace} onDelete={deleteRace} />)}
+        </div>
+      </Block>
       <div className="h-4" />
     </div>
   );
 }
 
+function HistoryRow({race,onLoad,onDelete}){
+  const [open,setOpen]=useState(false);
+  const winner=race.result&&race.result[0];
+  return (
+    <div className="border border-zinc-800">
+      <div className="flex items-center gap-2 p-2">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm truncate">{race.meta.competition||'Course'} <span className="text-zinc-600">· {race.meta.raceType||''}</span></div>
+          <div className="text-[10px] text-zinc-500">{race.meta.date} · {moduleLabel(race.meta.module)} · {race.meta.category} {race.meta.discipline} · {(race.roster||[]).length} coureurs</div>
+          {winner && <div className="text-[10px] text-zinc-400">🏆 {winner.bib} {winner.name} — {winner.points} pts</div>}
+        </div>
+        <button onClick={()=>setOpen(o=>!o)} className="px-2 py-1 border border-zinc-700 text-zinc-400 text-xs">{open?'▲':'👁'}</button>
+        <button onClick={()=>onLoad(race)} className="px-2 py-1 border border-zinc-700 text-zinc-300 text-xs">📂</button>
+        <button onClick={()=>{if(confirm('Supprimer cette course ?'))onDelete(race.id);}} className="px-2 py-1 border border-zinc-800 text-zinc-600 text-xs">🗑</button>
+      </div>
+      {open && (
+        <div className="border-t border-zinc-800 max-h-60 overflow-y-auto p-1 space-y-px">
+          {(race.result||[]).map(r=>(
+            <div key={r.bib} className="flex items-center gap-2 text-xs py-1">
+              <span className="w-5 text-right text-zinc-400">{r.rank}</span>
+              <span className="font-bold text-red-500 w-9 text-center">{r.bib}</span>
+              <span className="flex-1 truncate">{r.name}</span>
+              {r.laps!==0 && <span className={r.laps>0?'text-emerald-400':'text-red-400'}>{r.laps>0?'+':''}{r.laps}T</span>}
+              <span className="font-bold">{r.points}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============================================================
-// TAB : SAISIE (sprint actif + tours/statuts)
+// ÉCRAN COUREURS (consolidé : import + roster + rôles)
+// Source unique des statuts.
 // ============================================================
-function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, roles, sprintResults, updateSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }) {
-  const [lapsOpen, setLapsOpen] = useState(false);
-  const [lapQuery, setLapQuery] = useState('');
-  if (!activeSprint) return <div className="p-4 text-zinc-500 text-sm">Aucun point configuré.</div>;
-  const existing = sprintResults.find(r => r.sprintId === activeSprint.id);
-  const lapList = lapQuery ? searchSkaters(skaters, lapQuery) : skaters.slice().sort((a,b)=>a.bib-b.bib);
+function CoureursScreen({skaters,roles,assignRole,assignRoleClub,setShowImport,roleCounts}){
+  const [q,setQ]=useState('');
+  const [filter,setFilter]=useState('all'); // all | mine | rivals | rest
+  const [teamOpen,setTeamOpen]=useState(false);
+
+  let list=q?searchSkaters(skaters,q):skaters.slice();
+  if(filter==='mine')list=list.filter(s=>getRole(roles,s)==='mine');
+  else if(filter==='rivals')list=list.filter(s=>['primary','secondary'].includes(getRole(roles,s)));
+  else if(filter==='rest')list=list.filter(s=>!getRole(roles,s));
+  if(!q)list.sort((a,b)=>{const o={mine:3,primary:2,secondary:1};return (o[getRole(roles,b)]||0)-(o[getRole(roles,a)]||0)||a.bib-b.bib;});
+
+  const clubs=useMemo(()=>{const m={};skaters.forEach(s=>{const c=s.club||'—';(m[c]=m[c]||[]).push(s);});return Object.entries(m).map(([club,l])=>({club,count:l.length,mineCount:l.filter(s=>getRole(roles,s)==='mine').length})).sort((a,b)=>b.count-a.count||a.club.localeCompare(b.club));},[skaters,roles]);
 
   return (
+    <div className="p-4 space-y-3">
+      <button onClick={()=>setShowImport(true)} className="w-full py-2.5 bg-red-600 active:bg-red-500 text-white text-sm font-bold uppercase tracking-wider">↓ Importer une starting list</button>
+
+      <div className="grid grid-cols-3 gap-1 text-center">
+        <Counter icon="⭐" label="Mes coureurs" n={roleCounts.mine} />
+        <Counter icon="🔴" label="Adv. princ." n={roleCounts.primary} />
+        <Counter icon="🟠" label="Adv. second." n={roleCounts.secondary} />
+      </div>
+
+      <input value={q} onChange={e=>setQ(e.target.value)} inputMode="numeric" placeholder="Rechercher (dossard / nom)…" className="w-full bg-black border border-zinc-700 px-3 py-2.5 text-base outline-none focus:border-red-500" />
+
+      <div className="flex gap-1">
+        {[['all','Tous'],['mine','⭐'],['rivals','🔴🟠'],['rest','Reste']].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setFilter(id)} className={`flex-1 py-1.5 text-xs border ${filter===id?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>{lbl}</button>
+        ))}
+      </div>
+
+      <button onClick={()=>setTeamOpen(o=>!o)} className="w-full py-1.5 border border-zinc-800 text-zinc-400 text-[10px] uppercase tracking-wider">{teamOpen?'Masquer':'⭐ Coacher une équipe entière'}</button>
+      {teamOpen && (
+        <div className="border border-zinc-800 max-h-52 overflow-y-auto">
+          {clubs.map(c=>(
+            <button key={c.club} onClick={()=>assignRoleClub(c.club,'mine')} className={`w-full flex items-center gap-2 px-2 py-2 border-b border-zinc-900 text-left text-xs ${c.mineCount===c.count?'bg-amber-950/30':''}`}>
+              <span className="flex-1 truncate" style={{color:clubColor(c.club)}}>{clubShort(c.club)}</span>
+              <span className="text-zinc-600">×{c.count}</span>
+              <span className={c.mineCount>0?'text-amber-400':'text-zinc-700'}>{c.mineCount===c.count?'⭐ tous':c.mineCount>0?`⭐ ${c.mineCount}/${c.count}`:'+⭐'}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="border border-zinc-800 divide-y divide-zinc-900">
+        {list.map(s=>{
+          const r=getRole(roles,s);
+          return (
+            <div key={s.id} className="flex items-center gap-1.5 py-2 px-2">
+              <button onClick={()=>assignRole(s,'mine')} className={`text-base ${r==='mine'?'':'opacity-25 grayscale'}`}>⭐</button>
+              <button onClick={()=>assignRole(s,'primary')} className={`text-base ${r==='primary'?'':'opacity-25 grayscale'}`}>🔴</button>
+              <button onClick={()=>assignRole(s,'secondary')} className={`text-base ${r==='secondary'?'':'opacity-25 grayscale'}`}>🟠</button>
+              <span className="font-bold text-red-500 w-9 text-center text-sm">{s.bib}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm truncate">{s.name}</div>
+                <div className="text-[10px] truncate" style={{color:clubColor(s.club)}}>{clubShort(s.club)}</div>
+              </div>
+              <span className="text-xs">{flag(s.nat)}</span>
+            </div>
+          );
+        })}
+        {list.length===0 && <div className="px-2 py-4 text-zinc-600 text-xs text-center">Aucun coureur.</div>}
+      </div>
+      <div className="h-4" />
+    </div>
+  );
+}
+function Counter({icon,label,n}){return <div className="border border-zinc-800 py-1.5"><div className="text-base leading-none">{icon}</div><div className="text-lg font-bold leading-tight">{n}</div><div className="text-[8px] text-zinc-500 uppercase">{label}</div></div>;}
+
+// ============================================================
+// MODULE POINTS — Saisie
+// ============================================================
+function PointsInput({config,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById}){
+  const [lapsOpen,setLapsOpen]=useState(false);
+  const [lapQuery,setLapQuery]=useState('');
+  if(!activeSprint)return <div className="p-4 text-zinc-500 text-sm">Aucun point configuré.</div>;
+  const existing=sprintResults.find(r=>r.sprintId===activeSprint.id);
+  const lapList=lapQuery?searchSkaters(skaters,lapQuery):skaters.slice().sort((a,b)=>a.bib-b.bib);
+  return (
     <div className="p-3 space-y-3">
-      {/* bandeau info course */}
       <div className="grid grid-cols-4 gap-px bg-zinc-800 border border-zinc-800 text-center">
         <Info label="Point" value={activeSprint.label} accent />
         <Info label="Points rest." value={pointsInfo.remaining} />
         <Info label="Pts max coureur" value={pointsInfo.maxSolo} />
         <Info label="Pts totaux rest." value={pointsInfo.total} />
       </div>
-
-      {/* nav point */}
       <div className="flex items-center gap-2">
-        <button onClick={() => activeSprintIdx > 0 && setActiveSprintIdx(activeSprintIdx - 1)}
-          disabled={activeSprintIdx === 0}
-          className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">←</button>
+        <button onClick={()=>activeSprintIdx>0&&setActiveSprintIdx(activeSprintIdx-1)} disabled={activeSprintIdx===0} className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">←</button>
         <div className="flex-1 text-center">
-          <div className="text-[10px] text-zinc-500 uppercase tracking-wider">
-            {activeSprint.isFinal ? 'Arrivée · 3-2-1' : 'Point intermédiaire · 2-1'}
-          </div>
-          <div className="text-3xl font-bold">{activeSprint.isFinal ? <span className="text-red-500">ARRIVÉE</span> : <>POINT <span className="text-red-500">{activeSprint.label}</span></>}</div>
+          <div className="text-[10px] text-zinc-500 uppercase tracking-wider">{activeSprint.isFinal?'Arrivée · 3-2-1':'Point intermédiaire · 2-1'}</div>
+          <div className="text-3xl font-bold">{activeSprint.isFinal?<span className="text-red-500">ARRIVÉE</span>:<>POINT <span className="text-red-500">{activeSprint.label}</span></>}</div>
           {existing && <div className="text-[10px] text-emerald-400">✓ enregistré — clique une place pour corriger</div>}
         </div>
-        <button onClick={() => activeSprintIdx < config.sprints.length - 1 && setActiveSprintIdx(activeSprintIdx + 1)}
-          disabled={activeSprintIdx === config.sprints.length - 1}
-          className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">→</button>
+        <button onClick={()=>activeSprintIdx<config.sprints.length-1&&setActiveSprintIdx(activeSprintIdx+1)} disabled={activeSprintIdx===config.sprints.length-1} className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">→</button>
       </div>
-
-      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} roles={roles} pointsById={pointsById}
-        existing={existing}
-        onChange={(positions) => updateSprint(activeSprint.id, activeSprint.isFinal, positions)}
-        onAdvance={() => { if (activeSprintIdx < config.sprints.length - 1) setActiveSprintIdx(activeSprintIdx + 1); }} />
-
-      {/* tours & statuts — avec recherche */}
+      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} roles={roles} pointsById={pointsById} existing={existing}
+        onChange={(p)=>updateSprint(activeSprint.id,activeSprint.isFinal,p)}
+        onAdvance={()=>{if(activeSprintIdx<config.sprints.length-1)setActiveSprintIdx(activeSprintIdx+1);}} />
       <div className="border-t border-zinc-800 pt-3">
-        <button onClick={() => setLapsOpen(o => !o)}
-          className="w-full flex justify-between items-center text-[10px] tracking-[0.25em] text-zinc-500 uppercase">
-          <span>Prises de tour & statuts</span>
-          <span>{lapsOpen ? '▲' : '▼'}</span>
-        </button>
+        <button onClick={()=>setLapsOpen(o=>!o)} className="w-full flex justify-between items-center text-[10px] tracking-[0.25em] text-zinc-500 uppercase"><span>Prises de tour & statuts</span><span>{lapsOpen?'▲':'▼'}</span></button>
         {lapsOpen && (
           <div className="mt-2 border border-zinc-800 bg-black p-1">
-            <input value={lapQuery} onChange={e=>setLapQuery(e.target.value)} inputMode="numeric"
-              placeholder="Filtrer dossard / nom…"
-              className="w-full bg-zinc-900 border border-zinc-700 px-2 py-2 text-sm mb-1 outline-none focus:border-red-500" />
+            <input value={lapQuery} onChange={e=>setLapQuery(e.target.value)} inputMode="numeric" placeholder="Filtrer dossard / nom…" className="w-full bg-zinc-900 border border-zinc-700 px-2 py-2 text-sm mb-1 outline-none focus:border-red-500" />
             <div className="max-h-64 overflow-y-auto space-y-px">
-              {lapList.map(s => {
-                const lap = lapChanges[s.id] || 0;
-                return (
-                  <div key={s.id} className="flex items-center gap-1 text-xs py-1">
-                    <span className="font-bold text-red-500 w-8 text-center">{s.bib}</span>
-                    <span className="flex-1 truncate">{s.name}</span>
-                    <div className="flex gap-0.5">
-                      <Lb on={lap===-1} c="red" onClick={()=>setLap(s.id,-1)}>-1</Lb>
-                      <Lb on={lap===0} c="zinc" onClick={()=>setLap(s.id,0)}>=</Lb>
-                      <Lb on={lap===1} c="emerald" onClick={()=>setLap(s.id,1)}>+1</Lb>
-                    </div>
-                    <div className="flex gap-0.5 ml-1">
-                      <Lb on={s.status==='DNF'} c="amber" onClick={()=>setStatus(s.id,'DNF')}>DNF</Lb>
-                      <Lb on={s.status==='DSQ'} c="red" onClick={()=>setStatus(s.id,'DSQ')}>DSQ</Lb>
-                    </div>
-                  </div>
-                );
-              })}
+              {lapList.map(s=>{const lap=lapChanges[s.id]||0;return (
+                <div key={s.id} className="flex items-center gap-1 text-xs py-1">
+                  <span className="font-bold text-red-500 w-8 text-center">{s.bib}</span>
+                  <span className="flex-1 truncate">{s.name}</span>
+                  <div className="flex gap-0.5"><Lb on={lap===-1} c="red" onClick={()=>setLap(s.id,-1)}>-1</Lb><Lb on={lap===0} c="zinc" onClick={()=>setLap(s.id,0)}>=</Lb><Lb on={lap===1} c="emerald" onClick={()=>setLap(s.id,1)}>+1</Lb></div>
+                  <div className="flex gap-0.5 ml-1"><Lb on={s.status==='DNF'} c="amber" onClick={()=>setStatus(s.id,'DNF')}>DNF</Lb><Lb on={s.status==='DSQ'} c="red" onClick={()=>setStatus(s.id,'DSQ')}>DSQ</Lb></div>
+                </div>);})}
             </div>
           </div>
         )}
@@ -747,224 +554,62 @@ function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, 
     </div>
   );
 }
+function Lb({on,c,onClick,children}){const cls=on?{red:'border-red-500 bg-red-500/20 text-red-400',emerald:'border-emerald-500 bg-emerald-500/20 text-emerald-400',amber:'border-amber-500 bg-amber-500/20 text-amber-400',zinc:'border-zinc-500 bg-zinc-800 text-zinc-200'}[c]:'border-zinc-800 text-zinc-600';return <button onClick={onClick} className={`px-1.5 py-1 border text-[10px] ${cls}`}>{children}</button>;}
 
-function Info({ label, value, accent }) {
-  return (
-    <div className="bg-zinc-950 py-1.5">
-      <div className="text-[8px] text-zinc-500 uppercase tracking-wider">{label}</div>
-      <div className={`text-lg font-bold leading-none ${accent ? 'text-red-500' : 'text-zinc-200'}`}>{value}</div>
-    </div>
-  );
-}
-
-function Lb({ on, c, onClick, children }) {
-  const cls = on
-    ? { red:'border-red-500 bg-red-500/20 text-red-400', emerald:'border-emerald-500 bg-emerald-500/20 text-emerald-400', amber:'border-amber-500 bg-amber-500/20 text-amber-400', zinc:'border-zinc-500 bg-zinc-800 text-zinc-200' }[c]
-    : 'border-zinc-800 text-zinc-600';
-  return <button onClick={onClick} className={`px-1.5 py-1 border text-[10px] ${cls}`}>{children}</button>;
-}
-
-// ============================================================
-// FAST SPRINT INPUT — menu déroulant intelligent au clic
-// Ordre : ⭐ coachés → 🔥 marqueurs → reste (équipe puis dossard)
-// ============================================================
-function orderedCandidates(skaters, roles, pointsById, query, excludeIds) {
-  const avail = skaters.filter(s => !excludeIds.includes(s.id));
-  if (query) return searchSkaters(avail, query);
-  const tMine = [], tPrim = [], tSec = [], tScored = [], tRest = [];
-  avail.forEach(s => {
-    const r = getRole(roles, s);
-    if (r === 'mine') tMine.push(s);
-    else if (r === 'primary') tPrim.push(s);
-    else if (r === 'secondary') tSec.push(s);
-    else if ((pointsById[s.id] || 0) > 0) tScored.push(s);
-    else tRest.push(s);
-  });
-  const byPts = (a, b) => (pointsById[b.id] || 0) - (pointsById[a.id] || 0) || a.bib - b.bib;
-  tMine.sort(byPts); tPrim.sort(byPts); tSec.sort(byPts); tScored.sort(byPts);
-  tRest.sort((a, b) => (a.club || '').localeCompare(b.club || '') || a.bib - b.bib);
-  return [...tMine, ...tPrim, ...tSec, ...tScored, ...tRest];
-}
-
-function FastSprintInput({ sprint, skaters, roles, pointsById, existing, onChange, onAdvance }) {
-  const slots = sprint.isFinal ? 3 : 2;
-  const pts = sprint.isFinal ? [3, 2, 1] : [2, 1];
-  const init = () => existing ? Array.from({ length: slots }, (_, i) => existing.positions[i] || null) : Array(slots).fill(null);
-  const [picks, setPicks] = useState(init);
-  const [openSlot, setOpenSlot] = useState(0);
-  const [query, setQuery] = useState('');
-
-  useEffect(() => {
-    const p = init();
-    setPicks(p);
-    const e = p.findIndex(x => !x);
-    setOpenSlot(e === -1 ? null : e);
-    setQuery('');
-  }, [sprint.id]);
-
-  const excludeIds = picks.filter((p, i) => p && i !== openSlot);
-  const candidates = useMemo(
-    () => orderedCandidates(skaters, roles, pointsById, query, excludeIds).slice(0, 60),
-    [skaters, roles, pointsById, query, picks, openSlot]
-  );
-
-  const selectSkater = (id) => {
-    const wasComplete = picks.every(Boolean);
-    const c = [...picks];
-    c[openSlot] = id;
-    setPicks(c);
-    onChange(c);                 // recalcul live du classement
-    setQuery('');
-    const nowComplete = c.every(Boolean);
-    if (nowComplete) {
-      if (!wasComplete) { setOpenSlot(null); onAdvance(); } // flux normal → point suivant
-      else { setOpenSlot(null); }                            // correction → on reste
-    } else {
-      let next = -1;
-      for (let i = 0; i < slots; i++) { if (!c[i]) { next = i; break; } }
-      setOpenSlot(next);
-    }
+function FastSprintInput({sprint,skaters,roles,pointsById,existing,onChange,onAdvance}){
+  const slots=sprint.isFinal?3:2;
+  const pts=sprint.isFinal?[3,2,1]:[2,1];
+  const init=()=>existing?Array.from({length:slots},(_,i)=>existing.positions[i]||null):Array(slots).fill(null);
+  const [picks,setPicks]=useState(init);
+  const [openSlot,setOpenSlot]=useState(0);
+  const [query,setQuery]=useState('');
+  useEffect(()=>{const p=init();setPicks(p);const e=p.findIndex(x=>!x);setOpenSlot(e===-1?null:e);setQuery('');},[sprint.id]);
+  const excludeIds=picks.filter((p,i)=>p&&i!==openSlot);
+  const candidates=useMemo(()=>orderedCandidates(skaters,roles,pointsById,query,excludeIds).slice(0,60),[skaters,roles,pointsById,query,picks,openSlot]);
+  const selectSkater=(id)=>{
+    const wasComplete=picks.every(Boolean);
+    const c=[...picks];c[openSlot]=id;setPicks(c);onChange(c);setQuery('');
+    const nowComplete=c.every(Boolean);
+    if(nowComplete){setOpenSlot(null);if(!wasComplete)onAdvance();}
+    else{let next=-1;for(let i=0;i<slots;i++){if(!c[i]){next=i;break;}}setOpenSlot(next);}
   };
-  const clearSlot = (i) => {
-    const c = [...picks]; c[i] = null;
-    setPicks(c);
-    onChange(c);                 // retire le point si plus rien
-    setQuery('');
-    setOpenSlot(i);
-  };
-
+  const clearSlot=(i)=>{const c=[...picks];c[i]=null;setPicks(c);onChange(c);setQuery('');setOpenSlot(i);};
   return (
     <div>
-      {/* slots positions */}
       <div className="space-y-1.5">
-        {picks.map((id, i) => {
-          const sk = skaters.find(s => s.id === id);
-          const isOpen = i === openSlot;
-          return (
-            <div key={i}
-              onClick={() => { setOpenSlot(isOpen ? null : i); setQuery(''); }}
-              className={`flex items-center gap-2 px-2 py-3 border ${isOpen ? 'border-red-500 bg-red-500/10' : sk ? 'border-zinc-700 bg-zinc-900' : 'border-zinc-800'}`}>
-              <span className="w-9 text-center shrink-0">
-                <span className="block text-[8px] text-zinc-500 leading-none">P°</span>
-                <span className="text-xl font-bold leading-none">{i + 1}</span>
-              </span>
-              {sk ? (
-                <span className="flex-1 min-w-0">
-                  <span className="flex items-baseline gap-2">
-                    <span className="font-bold text-red-500 text-lg">{sk.bib}</span>
-                    <span className="text-sm truncate">{sk.name}</span>
-                  </span>
-                  <span className="text-[10px] truncate block" style={{ color: clubColor(sk.club) }}>{clubShort(sk.club)}</span>
-                </span>
-              ) : (
-                <span className="flex-1 text-sm text-zinc-500">{isOpen ? '▾ choisis un coureur' : 'appuie pour choisir'}</span>
-              )}
-              <span className="text-red-500 font-bold shrink-0">+{pts[i]}</span>
-              {sk && <button onClick={(e) => { e.stopPropagation(); clearSlot(i); }} className="text-zinc-500 active:text-red-500 px-2 shrink-0 text-lg">✕</button>}
-            </div>
-          );
-        })}
+        {picks.map((id,i)=>{const sk=skaters.find(s=>s.id===id);const isOpen=i===openSlot;return (
+          <div key={i} onClick={()=>{setOpenSlot(isOpen?null:i);setQuery('');}} className={`flex items-center gap-2 px-2 py-3 border ${isOpen?'border-red-500 bg-red-500/10':sk?'border-zinc-700 bg-zinc-900':'border-zinc-800'}`}>
+            <span className="w-9 text-center shrink-0"><span className="block text-[8px] text-zinc-500 leading-none">P°</span><span className="text-xl font-bold leading-none">{i+1}</span></span>
+            {sk?(<span className="flex-1 min-w-0"><span className="flex items-baseline gap-2"><span className="font-bold text-red-500 text-lg">{sk.bib}</span><span className="text-sm truncate">{sk.name}</span></span><span className="text-[10px] truncate block" style={{color:clubColor(sk.club)}}>{clubShort(sk.club)}</span></span>):(<span className="flex-1 text-sm text-zinc-500">{isOpen?'▾ choisis un coureur':'appuie pour choisir'}</span>)}
+            <span className="text-red-500 font-bold shrink-0">+{pts[i]}</span>
+            {sk && <button onClick={(e)=>{e.stopPropagation();clearSlot(i);}} className="text-zinc-500 active:text-red-500 px-2 shrink-0 text-lg">✕</button>}
+          </div>);})}
       </div>
-
-      {/* menu déroulant intelligent */}
-      {openSlot != null && (
+      {openSlot!=null && (
         <div className="mt-2 border border-zinc-700 bg-black">
-          <div className="p-1.5 border-b border-zinc-800 flex items-center gap-2">
-            <span className="text-[10px] text-zinc-500 uppercase shrink-0">P{openSlot + 1} →</span>
-            <input value={query} inputMode="numeric"
-              onChange={e => setQuery(e.target.value)}
-              placeholder="ou tape dossard / nom…"
-              className="flex-1 bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-red-500" />
-          </div>
-          <div className="max-h-[46vh] overflow-y-auto">
-            {candidates.length === 0 && <div className="px-2 py-3 text-zinc-600 text-xs">Aucun coureur.</div>}
-            {candidates.map(s => {
-              const p = pointsById[s.id] || 0;
-              const r = getRole(roles, s);
-              const tag = r ? ROLE_ICON[r] : (p > 0 ? '📈' : '');
-              const bg = r === 'mine' ? 'bg-amber-950/20' : r === 'primary' ? 'bg-red-950/20' : r === 'secondary' ? 'bg-orange-950/15' : '';
-              return (
-                <button key={s.id} onClick={() => selectSkater(s.id)}
-                  className={`w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-800 border-b border-zinc-900 text-left ${bg}`}>
-                  <span className="w-5 text-center shrink-0">{tag}</span>
-                  <span className="font-bold text-red-500 w-9 text-base shrink-0">{s.bib}</span>
-                  <span className="flex-1 min-w-0">
-                    <span className="text-sm truncate block">{s.name}</span>
-                    <span className="text-[10px] truncate block" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</span>
-                  </span>
-                  <span className={`text-sm font-bold shrink-0 ${p > 0 ? 'text-zinc-200' : 'text-zinc-600'}`}>{p}<span className="text-[8px] text-zinc-600 ml-0.5">pts</span></span>
-                </button>
-              );
-            })}
+          <div className="p-1.5 border-b border-zinc-800 flex items-center gap-2"><span className="text-[10px] text-zinc-500 uppercase shrink-0">P{openSlot+1} →</span><input value={query} inputMode="numeric" onChange={e=>setQuery(e.target.value)} placeholder="ou tape dossard / nom…" className="flex-1 bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-red-500" /></div>
+          <div className="max-h-[44vh] overflow-y-auto">
+            {candidates.length===0 && <div className="px-2 py-3 text-zinc-600 text-xs">Aucun coureur.</div>}
+            {candidates.map(s=>{const p=pointsById[s.id]||0;const r=getRole(roles,s);const tag=r?ROLE_ICON[r]:(p>0?'📈':'');const bg=r==='mine'?'bg-amber-950/20':r==='primary'?'bg-red-950/20':r==='secondary'?'bg-orange-950/15':'';return (
+              <button key={s.id} onClick={()=>selectSkater(s.id)} className={`w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-800 border-b border-zinc-900 text-left ${bg}`}>
+                <span className="w-5 text-center shrink-0">{tag}</span>
+                <span className="font-bold text-red-500 w-9 text-base shrink-0">{s.bib}</span>
+                <span className="flex-1 min-w-0"><span className="text-sm truncate block">{s.name}</span><span className="text-[10px] truncate block" style={{color:clubColor(s.club)}}>{clubShort(s.club)}</span></span>
+                <span className={`text-sm font-bold shrink-0 ${p>0?'text-zinc-200':'text-zinc-600'}`}>{p}<span className="text-[8px] text-zinc-600 ml-0.5">pts</span></span>
+              </button>);})}
           </div>
         </div>
       )}
-
-      <div className="mt-2 text-center text-[10px] text-zinc-600">
-        P1 + P2 remplis → enregistré et passage auto au point suivant. Flèches ← → pour corriger / point oublié.
-      </div>
+      <div className="mt-2 text-center text-[10px] text-zinc-600">P1 + P2 remplis → enregistré + point suivant auto. Flèches ← → pour corriger / point oublié.</div>
     </div>
   );
 }
 
 // ============================================================
-// VOICE BUTTON
+// MODULE POINTS — Classement
 // ============================================================
-function VoiceButton({ onResult }) {
-  const [listening, setListening] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [error, setError] = useState(null);
-  const recRef = useRef(null);
-  const finalRef = useRef('');
-  const supported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
-
-  const start = useCallback(() => {
-    if (!supported) { setError('Vocal indispo'); setTimeout(()=>setError(null),2000); return; }
-    setError(null); setTranscript(''); finalRef.current = '';
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const rec = new SR();
-    rec.lang = 'fr-FR'; rec.interimResults = true; rec.continuous = false;
-    rec.onresult = (ev) => {
-      let interim = '';
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        const t = ev.results[i][0].transcript;
-        if (ev.results[i].isFinal) finalRef.current += t; else interim += t;
-      }
-      setTranscript((finalRef.current + interim).trim());
-    };
-    rec.onerror = (e) => { setError(e.error); setListening(false); setTimeout(()=>setError(null),2000); };
-    rec.onend = () => { setListening(false); if (finalRef.current.trim()) onResult(finalRef.current.trim()); };
-    try { rec.start(); setListening(true); recRef.current = rec; } catch { setError('start fail'); }
-  }, [supported, onResult]);
-
-  const stop = useCallback(() => { try { recRef.current && recRef.current.stop(); } catch {} }, []);
-
-  return (
-    <div className="relative">
-      <button
-        onMouseDown={start} onMouseUp={stop} onMouseLeave={()=>listening&&stop()}
-        onTouchStart={(e)=>{e.preventDefault();start();}} onTouchEnd={(e)=>{e.preventDefault();stop();}}
-        className={`w-14 h-full min-h-[48px] border flex items-center justify-center ${listening ? 'bg-red-600 border-red-600 animate-pulse' : 'bg-zinc-900 border-zinc-700'}`}>
-        <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor">
-          <path d="M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3z"/>
-          <path d="M19 11a1 1 0 10-2 0 5 5 0 01-10 0 1 1 0 10-2 0 7 7 0 006 6.92V21h-2a1 1 0 100 2h6a1 1 0 100-2h-2v-3.08A7 7 0 0019 11z"/>
-        </svg>
-      </button>
-      {listening && (
-        <div className="absolute bottom-full left-0 mb-1 bg-black border border-red-500 px-2 py-1 text-[10px] text-red-400 whitespace-nowrap z-30 max-w-[60vw] overflow-hidden">
-          ● {transcript || 'Parle…'}
-        </div>
-      )}
-      {error && <div className="absolute bottom-full left-0 mb-1 bg-black border border-amber-500 px-2 py-1 text-[10px] text-amber-400 z-30">⚠ {error}</div>}
-    </div>
-  );
-}
-
-// ============================================================
-// TAB : CLASSEMENT
-// ============================================================
-function ClassementTab({ ranking, teamRanking, roles, pointsInfo }) {
-  const [view, setView] = useState('indiv'); // indiv | team
+function PointsBoard({ranking,teamRanking,roles,pointsInfo}){
+  const [view,setView]=useState('indiv');
   return (
     <div className="p-4">
       <div className="grid grid-cols-2 gap-1 mb-2">
@@ -973,61 +618,30 @@ function ClassementTab({ ranking, teamRanking, roles, pointsInfo }) {
       </div>
       <div className="flex justify-between items-center text-[10px] text-zinc-500 mb-2 px-1">
         <span>{pointsInfo.remaining} point{pointsInfo.remaining>1?'s':''} restant{pointsInfo.remaining>1?'s':''}</span>
-        <span><span className="text-zinc-300 font-bold">{pointsInfo.total}</span> pts à distribuer · max <span className="text-zinc-300 font-bold">{pointsInfo.maxSolo}</span> pour 1 coureur</span>
+        <span><span className="text-zinc-300 font-bold">{pointsInfo.total}</span> pts à distribuer · max <span className="text-zinc-300 font-bold">{pointsInfo.maxSolo}</span>/coureur</span>
       </div>
-
-      {view === 'indiv' ? (
+      {view==='indiv'?(
         <div className="space-y-px">
           <div className="text-[9px] text-zinc-600 uppercase mb-1">Tours › Pts › Dernier point › Arrivée</div>
-          {ranking.map((r, i) => {
-            const leader = i === 0 && !r.statusVoid;
-            return (
-              <div key={r.id} className={`flex items-center gap-2 py-2 px-2 border-l-2 ${
-                leader ? 'border-red-500 bg-red-950/30' : i<3&&!r.statusVoid ? 'border-zinc-500 bg-zinc-900/50' :
-                r.statusVoid ? 'border-zinc-800 opacity-40' : r.lappedOut ? 'border-amber-700 bg-amber-950/20' : 'border-zinc-800'}`}>
-                <div className={`w-6 text-right font-bold ${leader?'text-red-500':'text-zinc-400'}`}>{r.rank}</div>
-                <div className="w-4 text-center text-xs">
-                  {r.move > 0 && <span className="text-emerald-400">▲</span>}
-                  {r.move < 0 && <span className="text-red-400">▼</span>}
-                </div>
-                <div className="font-bold text-red-500 w-9 text-center text-sm">{r.bib}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm truncate flex items-center gap-1">
-                    {getRole(roles, r) && <span className="text-xs">{ROLE_ICON[getRole(roles, r)]}</span>}{r.name}
-                  </div>
-                  <div className="text-[10px] flex gap-2 items-center">
-                    <span style={{color:clubColor(r.club)}} className="truncate max-w-[120px]">{clubShort(r.club)}</span>
-                    {r.laps!==0 && <span className={r.laps>0?'text-emerald-400':'text-red-400'}>{r.laps>0?'+':''}{r.laps}T</span>}
-                    {r.statusVoid && <span className="text-amber-500">{r.status}</span>}
-                    {r.lappedOut && !r.statusVoid && <span className="text-red-400">LAPPÉ</span>}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className={`text-xl font-bold ${leader?'text-red-500':'text-zinc-200'}`}>{r.points}</div>
-                  <div className="text-[8px] text-zinc-600">PTS</div>
-                </div>
+          {ranking.map((r,i)=>{const leader=i===0&&!r.statusVoid;return (
+            <div key={r.id} className={`flex items-center gap-2 py-2 px-2 border-l-2 ${leader?'border-red-500 bg-red-950/30':i<3&&!r.statusVoid?'border-zinc-500 bg-zinc-900/50':r.statusVoid?'border-zinc-800 opacity-40':r.lappedOut?'border-amber-700 bg-amber-950/20':'border-zinc-800'}`}>
+              <div className={`w-6 text-right font-bold ${leader?'text-red-500':'text-zinc-400'}`}>{r.rank}</div>
+              <div className="w-4 text-center text-xs">{r.move>0&&<span className="text-emerald-400">▲</span>}{r.move<0&&<span className="text-red-400">▼</span>}</div>
+              <div className="font-bold text-red-500 w-9 text-center text-sm">{r.bib}</div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm truncate flex items-center gap-1">{getRole(roles,r)&&<span className="text-xs">{ROLE_ICON[getRole(roles,r)]}</span>}{r.name}</div>
+                <div className="text-[10px] flex gap-2 items-center"><span style={{color:clubColor(r.club)}} className="truncate max-w-[120px]">{clubShort(r.club)}</span>{r.laps!==0&&<span className={r.laps>0?'text-emerald-400':'text-red-400'}>{r.laps>0?'+':''}{r.laps}T</span>}{r.statusVoid&&<span className="text-amber-500">{r.status}</span>}{r.lappedOut&&!r.statusVoid&&<span className="text-red-400">LAPPÉ</span>}</div>
               </div>
-            );
-          })}
+              <div className="text-right"><div className={`text-xl font-bold ${leader?'text-red-500':'text-zinc-200'}`}>{r.points}</div><div className="text-[8px] text-zinc-600">PTS</div></div>
+            </div>);})}
         </div>
-      ) : (
+      ):(
         <div className="space-y-1">
           <div className="text-[9px] text-zinc-600 uppercase mb-1">Points cumulés par club</div>
-          {teamRanking.map((t, i) => (
-            <div key={t.club} className="border border-zinc-800 p-2" style={{ borderLeftWidth: 3, borderLeftColor: clubColor(t.club) }}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-zinc-500 font-bold w-5">{i+1}</span>
-                  <span className="text-sm truncate" style={{color:clubColor(t.club)}}>{clubShort(t.club)}</span>
-                  <span className="text-[10px] text-zinc-600">×{t.skaters.length}</span>
-                </div>
-                <span className="text-xl font-bold">{t.points}<span className="text-[8px] text-zinc-600 ml-1">PTS</span></span>
-              </div>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {t.skaters.sort((a,b)=>a.rank-b.rank).map(s => (
-                  <span key={s.id} className="text-[10px] px-1 border border-zinc-800 text-zinc-400">#{s.bib} ({s.points})</span>
-                ))}
-              </div>
+          {teamRanking.map((t,i)=>(
+            <div key={t.club} className="border border-zinc-800 p-2" style={{borderLeftWidth:3,borderLeftColor:clubColor(t.club)}}>
+              <div className="flex items-center justify-between"><div className="flex items-center gap-2 min-w-0"><span className="text-zinc-500 font-bold w-5">{i+1}</span><span className="text-sm truncate" style={{color:clubColor(t.club)}}>{clubShort(t.club)}</span><span className="text-[10px] text-zinc-600">×{t.skaters.length}</span></div><span className="text-xl font-bold">{t.points}<span className="text-[8px] text-zinc-600 ml-1">PTS</span></span></div>
+              <div className="flex flex-wrap gap-1 mt-1">{t.skaters.sort((a,b)=>a.rank-b.rank).map(s=><span key={s.id} className="text-[10px] px-1 border border-zinc-800 text-zinc-400">#{s.bib} ({s.points})</span>)}</div>
             </div>
           ))}
         </div>
@@ -1040,81 +654,30 @@ function ClassementTab({ ranking, teamRanking, roles, pointsInfo }) {
 // ============================================================
 // IMPORT MODAL
 // ============================================================
-function ImportModal({ onClose, onImport }) {
-  const [tab, setTab] = useState('photo');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [text, setText] = useState('');
-
-  const doPhoto = async (e) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    setLoading(true); setError(null); setPreview(null);
-    try {
-      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=()=>rej(new Error('lecture')); r.readAsDataURL(file); });
-      const list = await importViaApi({ imageData: b64, mediaType: file.type });
-      list.length ? setPreview(list) : setError('Aucun coureur détecté.');
-    } catch (err) { setError(err.message); } finally { setLoading(false); }
-  };
-  const doText = async () => {
-    if (!text.trim()) return;
-    setLoading(true); setError(null); setPreview(null);
-    try { const list = await importViaApi({ text }); list.length ? setPreview(list) : setError('Aucun coureur détecté.'); }
-    catch (err) { setError(err.message); } finally { setLoading(false); }
-  };
-
+function ImportModal({onClose,onImport}){
+  const [tab,setTab]=useState('photo');
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState(null);
+  const [preview,setPreview]=useState(null);
+  const [text,setText]=useState('');
+  const doPhoto=async(e)=>{const file=e.target.files?.[0];if(!file)return;setLoading(true);setError(null);setPreview(null);try{const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=()=>rej(new Error('lecture'));r.readAsDataURL(file);});const list=await importViaApi({imageData:b64,mediaType:file.type});list.length?setPreview(list):setError('Aucun coureur détecté.');}catch(err){setError(err.message);}finally{setLoading(false);}};
+  const doText=async()=>{if(!text.trim())return;setLoading(true);setError(null);setPreview(null);try{const list=await importViaApi({text});list.length?setPreview(list):setError('Aucun coureur détecté.');}catch(err){setError(err.message);}finally{setLoading(false);}};
   return (
     <div className="fixed inset-0 bg-black/85 z-50 flex items-end sm:items-center justify-center">
       <div className="bg-zinc-950 border border-zinc-700 w-full sm:max-w-lg max-h-[90vh] overflow-y-auto safe-bottom">
-        <div className="border-b border-zinc-800 px-4 py-3 flex justify-between items-center sticky top-0 bg-zinc-950">
-          <h2 className="text-sm font-bold uppercase tracking-wider">Import starting list</h2>
-          <button onClick={onClose} className="text-zinc-500 active:text-red-500 text-xl px-2">✕</button>
-        </div>
+        <div className="border-b border-zinc-800 px-4 py-3 flex justify-between items-center sticky top-0 bg-zinc-950"><h2 className="text-sm font-bold uppercase tracking-wider">Import starting list</h2><button onClick={onClose} className="text-zinc-500 active:text-red-500 text-xl px-2">✕</button></div>
         <div className="p-4">
-          <div className="flex gap-1 mb-4">
-            {[['photo','📷 Photo'],['paste','📋 Texte'],['manual','✎ Manuel']].map(([id,lbl]) => (
-              <button key={id} onClick={()=>{setTab(id);setPreview(null);setError(null);}}
-                className={`flex-1 py-2 text-xs uppercase border ${tab===id?'border-red-500 text-red-400':'border-zinc-800 text-zinc-500'}`}>{lbl}</button>
-            ))}
-          </div>
-
-          {tab==='photo' && (
-            <div>
-              <p className="text-xs text-zinc-400 mb-3">Photo ou capture de la starting list. L'IA extrait dossard / nom / club / pays.</p>
-              <input type="file" accept="image/*" capture="environment" onChange={doPhoto} disabled={loading}
-                className="block w-full text-xs text-zinc-400 file:mr-3 file:py-2 file:px-4 file:border-0 file:bg-red-600 file:text-white file:text-xs file:uppercase" />
-            </div>
-          )}
-          {tab==='paste' && (
-            <div>
-              <p className="text-xs text-zinc-400 mb-3">Colle la liste (depuis un site, PDF, email…).</p>
-              <textarea value={text} onChange={e=>setText(e.target.value)} rows={6}
-                placeholder={"464 BEDDIAF Nolan MANAO\n449 ROCHER Matthis MANAO"}
-                className="w-full bg-black border border-zinc-700 p-3 text-xs focus:border-red-500 outline-none" />
-              <button onClick={doText} disabled={loading||!text.trim()}
-                className="mt-2 w-full py-2 bg-red-600 active:bg-red-500 disabled:opacity-40 text-white text-xs uppercase tracking-wider">Analyser</button>
-            </div>
-          )}
-          {tab==='manual' && <ManualEntry onSave={onImport} />}
-
-          {loading && <div className="mt-3 text-xs text-amber-400">Analyse en cours…</div>}
-          {error && <div className="mt-3 text-xs text-red-400 border border-red-900 bg-red-950/30 p-2">⚠ {error}</div>}
-
-          {preview && (
+          <div className="flex gap-1 mb-4">{[['photo','📷 Photo'],['paste','📋 Texte'],['manual','✎ Manuel']].map(([id,lbl])=><button key={id} onClick={()=>{setTab(id);setPreview(null);setError(null);}} className={`flex-1 py-2 text-xs uppercase border ${tab===id?'border-red-500 text-red-400':'border-zinc-800 text-zinc-500'}`}>{lbl}</button>)}</div>
+          {tab==='photo'&&<div><p className="text-xs text-zinc-400 mb-3">Photo ou capture de la startlist. L'IA extrait dossard / nom / club / pays.</p><input type="file" accept="image/*" capture="environment" onChange={doPhoto} disabled={loading} className="block w-full text-xs text-zinc-400 file:mr-3 file:py-2 file:px-4 file:border-0 file:bg-red-600 file:text-white file:text-xs file:uppercase" /></div>}
+          {tab==='paste'&&<div><p className="text-xs text-zinc-400 mb-3">Colle la liste (site, PDF, email…).</p><textarea value={text} onChange={e=>setText(e.target.value)} rows={6} placeholder={"464 BEDDIAF Nolan MANAO\n449 ROCHER Matthis MANAO"} className="w-full bg-black border border-zinc-700 p-3 text-xs outline-none focus:border-red-500" /><button onClick={doText} disabled={loading||!text.trim()} className="mt-2 w-full py-2 bg-red-600 active:bg-red-500 disabled:opacity-40 text-white text-xs uppercase tracking-wider">Analyser</button></div>}
+          {tab==='manual'&&<ManualEntry onSave={onImport} />}
+          {loading&&<div className="mt-3 text-xs text-amber-400">Analyse en cours…</div>}
+          {error&&<div className="mt-3 text-xs text-red-400 border border-red-900 bg-red-950/30 p-2">⚠ {error}</div>}
+          {preview&&(
             <div className="mt-4 border border-emerald-700 bg-emerald-950/20 p-3">
               <div className="text-xs text-emerald-400 uppercase mb-2">✓ {preview.length} coureurs détectés</div>
-              <div className="max-h-52 overflow-y-auto space-y-px text-xs">
-                {preview.map(p => (
-                  <div key={p.id} className="flex items-center gap-2 py-1">
-                    <span className="font-bold text-red-500 w-9">#{p.bib}</span>
-                    <span className="flex-1 truncate">{p.name}</span>
-                    <span className="text-zinc-500 truncate max-w-[90px]" style={{color:clubColor(p.club)}}>{clubShort(p.club)}</span>
-                    <span>{flag(p.nat)}</span>
-                  </div>
-                ))}
-              </div>
-              <button onClick={()=>onImport(preview)}
-                className="w-full mt-3 py-2 bg-red-600 active:bg-red-500 text-white text-xs uppercase tracking-wider">Importer cette liste</button>
+              <div className="max-h-52 overflow-y-auto space-y-px text-xs">{preview.map(p=><div key={p.id} className="flex items-center gap-2 py-1"><span className="font-bold text-red-500 w-9">#{p.bib}</span><span className="flex-1 truncate">{p.name}</span><span className="truncate max-w-[90px]" style={{color:clubColor(p.club)}}>{clubShort(p.club)}</span><span>{flag(p.nat)}</span></div>)}</div>
+              <button onClick={()=>onImport(preview)} className="w-full mt-3 py-2 bg-red-600 active:bg-red-500 text-white text-xs uppercase tracking-wider">Importer cette liste</button>
             </div>
           )}
         </div>
@@ -1122,63 +685,34 @@ function ImportModal({ onClose, onImport }) {
     </div>
   );
 }
-
-function ManualEntry({ onSave }) {
-  const [rows, setRows] = useState([{ bib:'', name:'', club:'', nat:'FRA' }]);
-  const upd = (i,f,v) => setRows(r => { const c=[...r]; c[i]={...c[i],[f]:v}; return c; });
-  const save = () => {
-    const list = rows.filter(r=>r.bib&&r.name).map((r,i)=>({ id:i+1, bib:Number(r.bib), name:r.name, club:r.club, nat:(r.nat||'FRA').toUpperCase(), cat:'Senior', status:null }));
-    if (list.length) onSave(list);
-  };
+function ManualEntry({onSave}){
+  const [rows,setRows]=useState([{bib:'',name:'',club:'',nat:'FRA'}]);
+  const upd=(i,f,v)=>setRows(r=>{const c=[...r];c[i]={...c[i],[f]:v};return c;});
+  const save=()=>{const list=rows.filter(r=>r.bib&&r.name).map((r,i)=>({id:i+1,bib:Number(r.bib),name:r.name,club:r.club,nat:(r.nat||'FRA').toUpperCase(),cat:'Senior',status:null}));if(list.length)onSave(list);};
   return (
     <div>
-      <div className="space-y-1 max-h-72 overflow-y-auto">
-        {rows.map((r,i)=>(
-          <div key={i} className="flex gap-1">
-            <input value={r.bib} onChange={e=>upd(i,'bib',e.target.value)} placeholder="N°" inputMode="numeric" className="w-12 bg-black border border-zinc-700 px-2 py-1.5 text-xs" />
-            <input value={r.name} onChange={e=>upd(i,'name',e.target.value)} placeholder="Nom" className="flex-1 bg-black border border-zinc-700 px-2 py-1.5 text-xs" />
-            <input value={r.club} onChange={e=>upd(i,'club',e.target.value)} placeholder="Club" className="w-20 bg-black border border-zinc-700 px-2 py-1.5 text-xs" />
-            <button onClick={()=>setRows(rows.filter((_,x)=>x!==i))} className="px-2 text-zinc-500">✕</button>
-          </div>
-        ))}
-      </div>
-      <div className="flex gap-2 mt-2">
-        <button onClick={()=>setRows([...rows,{bib:'',name:'',club:'',nat:'FRA'}])} className="px-3 py-1.5 border border-zinc-700 text-zinc-400 text-xs">+ Ligne</button>
-        <button onClick={save} className="flex-1 py-1.5 bg-red-600 active:bg-red-500 text-white text-xs uppercase tracking-wider">Sauver ({rows.filter(r=>r.bib&&r.name).length})</button>
-      </div>
+      <div className="space-y-1 max-h-72 overflow-y-auto">{rows.map((r,i)=>(
+        <div key={i} className="flex gap-1">
+          <input value={r.bib} onChange={e=>upd(i,'bib',e.target.value)} placeholder="N°" inputMode="numeric" className="w-12 bg-black border border-zinc-700 px-2 py-1.5 text-xs" />
+          <input value={r.name} onChange={e=>upd(i,'name',e.target.value)} placeholder="Nom" className="flex-1 bg-black border border-zinc-700 px-2 py-1.5 text-xs" />
+          <input value={r.club} onChange={e=>upd(i,'club',e.target.value)} placeholder="Club" className="w-20 bg-black border border-zinc-700 px-2 py-1.5 text-xs" />
+          <button onClick={()=>setRows(rows.filter((_,x)=>x!==i))} className="px-2 text-zinc-500">✕</button>
+        </div>))}</div>
+      <div className="flex gap-2 mt-2"><button onClick={()=>setRows([...rows,{bib:'',name:'',club:'',nat:'FRA'}])} className="px-3 py-1.5 border border-zinc-700 text-zinc-400 text-xs">+ Ligne</button><button onClick={save} className="flex-1 py-1.5 bg-red-600 active:bg-red-500 text-white text-xs uppercase tracking-wider">Sauver ({rows.filter(r=>r.bib&&r.name).length})</button></div>
     </div>
   );
 }
 
 // ============================================================
-// UI HELPERS
+// HELPERS UI
 // ============================================================
-function Block({ title, children }) {
-  return <div><div className="text-[10px] tracking-[0.25em] text-zinc-500 uppercase mb-2">{title}</div><div className="space-y-2">{children}</div></div>;
-}
-function Lab({ children }) { return <label className="text-[10px] text-zinc-400 uppercase tracking-wider">{children}</label>; }
-function Stat({ label, value }) {
-  return <div className="flex justify-between items-baseline py-1 border-b border-zinc-900"><span className="text-[10px] text-zinc-500 uppercase">{label}</span><span className="text-sm font-bold">{value}</span></div>;
-}
-function Choice({ label, options, value, onChange }) {
-  return (
-    <div>
-      <Lab>{label}</Lab>
-      <div className="grid gap-1 mt-1" style={{ gridTemplateColumns: `repeat(${options.length},1fr)` }}>
-        {options.map(o => (
-          <button key={o} onClick={()=>onChange(o)}
-            className={`py-2 text-xs border ${value===o?'bg-red-600 border-red-600 text-white':'border-zinc-700 text-zinc-400'}`}>{o}</button>
-        ))}
-      </div>
-    </div>
-  );
-}
+function Block({title,children}){return <div><div className="text-[10px] tracking-[0.25em] text-zinc-500 uppercase mb-2">{title}</div><div className="space-y-2">{children}</div></div>;}
+function Field({label,children}){return <div><label className="text-[10px] text-zinc-400 uppercase tracking-wider">{label}</label><div className="mt-1">{children}</div></div>;}
+function Stat({label,value}){return <div className="flex flex-col items-center py-1 border-b border-zinc-900"><span className="text-sm font-bold">{value}</span><span className="text-[9px] text-zinc-500 uppercase">{label}</span></div>;}
+function Info({label,value,accent}){return <div className="bg-zinc-950 py-1.5"><div className="text-[8px] text-zinc-500 uppercase tracking-wider">{label}</div><div className={`text-lg font-bold leading-none ${accent?'text-red-500':'text-zinc-200'}`}>{value}</div></div>;}
+function Choice({label,options,value,onChange}){return <div><label className="text-[10px] text-zinc-400 uppercase tracking-wider">{label}</label><div className="grid gap-1 mt-1" style={{gridTemplateColumns:`repeat(${options.length},1fr)`}}>{options.map(o=><button key={o} onClick={()=>onChange(o)} className={`py-2 text-xs border ${value===o?'bg-red-600 border-red-600 text-white':'border-zinc-700 text-zinc-400'}`}>{o}</button>)}</div></div>;}
 
-// ============================================================
-// MOUNT + service worker
-// ============================================================
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-// service worker ajouté plus tard (étape 2)
   </script>
 </body>
 </html>
