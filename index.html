@@ -200,6 +200,12 @@ function parseVoiceTranscript(transcript, skaters) {
 // ============================================================
 const FLAG_MAP = { FRA:'🇫🇷',ITA:'🇮🇹',KOR:'🇰🇷',COL:'🇨🇴',GER:'🇩🇪',BRA:'🇧🇷',JPN:'🇯🇵',BEL:'🇧🇪',NED:'🇳🇱',USA:'🇺🇸',ESP:'🇪🇸',CHI:'🇨🇱',ARG:'🇦🇷',CHN:'🇨🇳',TPE:'🇹🇼',ECU:'🇪🇨',VEN:'🇻🇪',MEX:'🇲🇽',AUS:'🇦🇺',NZL:'🇳🇿',POR:'🇵🇹',SUI:'🇨🇭',POL:'🇵🇱',CZE:'🇨🇿',SVK:'🇸🇰',DEN:'🇩🇰' };
 const flag = (c) => FLAG_MAP[(c||'').toUpperCase()] || '🏁';
+
+// Identité permanente de l'athlète = nom normalisé (marche à l'international).
+// Les profils tactiques futurs utiliseront la même clé.
+function nameKey(s) { return normalize(s.name); }
+function getRole(roles, s) { return roles[nameKey(s)] || null; }
+const ROLE_ICON = { mine: '⭐', primary: '🔴', secondary: '🟠' };
 function clubColor(club) {
   if (!club) return '#52525b';
   let h = 0;
@@ -293,8 +299,7 @@ function App() {
   const [totalDistance, setTotalDistance] = useState(() => LS.get('cfg_dist', 5000));
 
   const [skaters, setSkaters] = useState(() => LS.get('skaters', DEFAULT_LIST));
-  const [coached, setCoached] = useState(() => LS.get('coached', LS.get('favorites', []))); // migration ancienne clé
-  const [favoris, setFavoris] = useState(() => LS.get('favoris', []));
+  const [roles, setRoles] = useState(() => LS.get('roles', {})); // { nomNormalisé: 'mine'|'primary'|'secondary' }
   const [sprintResults, setSprintResults] = useState(() => LS.get('sprintResults', []));
   const [lapChanges, setLapChanges] = useState(() => LS.get('lapChanges', {}));
   const [activeSprintIdx, setActiveSprintIdx] = useState(0);
@@ -311,8 +316,20 @@ function App() {
 
   // persistance
   useEffect(() => LS.set('skaters', skaters), [skaters]);
-  useEffect(() => LS.set('coached', coached), [coached]);
-  useEffect(() => LS.set('favoris', favoris), [favoris]);
+  useEffect(() => LS.set('roles', roles), [roles]);
+  // migration unique depuis l'ancien système (coached/favoris par id)
+  useEffect(() => {
+    if (Object.keys(roles).length) return;
+    const oldC = LS.get('coached', LS.get('favorites', []));
+    const oldF = LS.get('favoris', []);
+    if (!oldC.length && !oldF.length) return;
+    const m = {};
+    skaters.forEach(s => {
+      if (oldC.includes(s.id)) m[nameKey(s)] = 'mine';
+      else if (oldF.includes(s.id)) m[nameKey(s)] = 'primary';
+    });
+    if (Object.keys(m).length) setRoles(m);
+  }, []);
   useEffect(() => LS.set('sprintResults', sprintResults), [sprintResults]);
   useEffect(() => LS.set('lapChanges', lapChanges), [lapChanges]);
   useEffect(() => { LS.set('cfg_cat', category); LS.set('cfg_disc', discipline); LS.set('cfg_circ', circuitLength); LS.set('cfg_dist', totalDistance); }, [category, discipline, circuitLength, totalDistance]);
@@ -349,15 +366,18 @@ function App() {
     const sk = skaters.find(s => s.id === id);
     if (sk && sk.status !== st) showToast(`${st} · ${sk.bib} ${sk.name}`, 'loss');
   };
-  const toggleCoached = (id) => setCoached(prev => prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]);
-  const toggleFavori = (id) => setFavoris(prev => prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]);
-  const coachClub = (club) => {
-    const ids = skaters.filter(s => s.club === club).map(s => s.id);
-    setCoached(prev => {
-      const allIn = ids.every(id => prev.includes(id));
-      return allIn ? prev.filter(id => !ids.includes(id)) : Array.from(new Set([...prev, ...ids]));
-    });
-  };
+  const assignRole = (s, role) => setRoles(prev => {
+    const k = nameKey(s); const c = { ...prev };
+    if (c[k] === role) delete c[k]; else c[k] = role;
+    return c;
+  });
+  const assignRoleClub = (club, role) => setRoles(prev => {
+    const c = { ...prev };
+    const members = skaters.filter(s => s.club === club);
+    const allIn = members.every(s => c[nameKey(s)] === role);
+    members.forEach(s => { const k = nameKey(s); if (allIn) delete c[k]; else c[k] = role; });
+    return c;
+  });
   const importSkaters = (list) => { setSkaters(list); resetRace(); setShowImport(false); };
 
   const ranking = useMemo(() => computeRanking(skaters, sprintResults, lapChanges), [skaters, sprintResults, lapChanges]);
@@ -407,13 +427,13 @@ function App() {
       {/* CONTENT */}
       <main className="flex-1 overflow-y-auto">
         {tab === 'course' && (
-          <CourseTab {...{ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, coached, favoris, toggleCoached, toggleFavori, coachClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }} />
+          <CourseTab {...{ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, roles, assignRole, assignRoleClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }} />
         )}
         {tab === 'saisie' && (
-          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, coached, favoris, sprintResults, updateSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }} />
+          <SaisieTab {...{ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, roles, sprintResults, updateSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }} />
         )}
         {tab === 'classement' && (
-          <ClassementTab {...{ ranking: rankingWithMove, teamRanking, coached, favoris, pointsInfo }} />
+          <ClassementTab {...{ ranking: rankingWithMove, teamRanking, roles, pointsInfo }} />
         )}
       </main>
 
@@ -450,25 +470,28 @@ function App() {
 // ============================================================
 // ENTOURAGE — 2 zones distinctes : ⭐ Coachés  /  🔥 Favoris
 // ============================================================
-function PickZone({ title, icon, accent, ids, toggle, skaters, placeholder, clubToggle, clubs }) {
+function PickZone({ title, icon, accent, role, roles, assignRole, skaters, placeholder, clubAssign, clubs }) {
   const [q, setQ] = useState('');
   const [byTeam, setByTeam] = useState(false);
-  const picked = skaters.filter(s => ids.includes(s.id)).sort((a, b) => a.bib - b.bib);
-  const results = q ? searchSkaters(skaters.filter(s => !ids.includes(s.id)), q).slice(0, 8) : [];
-  const border = accent === 'amber' ? 'border-amber-900/50 bg-amber-950/10' : 'border-orange-900/40 bg-orange-950/10';
-  const titleCol = accent === 'amber' ? 'text-amber-400' : 'text-orange-400';
+  const picked = skaters.filter(s => getRole(roles, s) === role).sort((a, b) => a.bib - b.bib);
+  const results = q ? searchSkaters(skaters.filter(s => getRole(roles, s) !== role), q).slice(0, 8) : [];
+  const tone = {
+    amber: { box: 'border-amber-900/50 bg-amber-950/10', title: 'text-amber-400', chip: 'bg-amber-900/30 border-amber-800' },
+    red: { box: 'border-red-900/50 bg-red-950/10', title: 'text-red-400', chip: 'bg-red-900/25 border-red-800' },
+    orange: { box: 'border-orange-900/40 bg-orange-950/10', title: 'text-orange-400', chip: 'bg-orange-900/25 border-orange-800' },
+  }[accent];
 
   return (
-    <div className={`border ${border} p-3`}>
-      <div className={`text-[10px] tracking-[0.25em] uppercase mb-2 ${titleCol}`}>{icon} {title} · {picked.length}</div>
+    <div className={`border ${tone.box} p-3`}>
+      <div className={`text-[10px] tracking-[0.25em] uppercase mb-2 ${tone.title}`}>{icon} {title} · {picked.length}</div>
       {picked.length > 0 ? (
         <div className="flex flex-wrap gap-1 mb-2">
           {picked.map(s => (
-            <button key={s.id} onClick={() => toggle(s.id)}
-              className={`flex items-center gap-1 px-2 py-1 border text-xs ${accent === 'amber' ? 'bg-amber-900/30 border-amber-800' : 'bg-orange-900/25 border-orange-800'}`}>
+            <button key={s.id} onClick={() => assignRole(s, role)}
+              className={`flex items-center gap-1 px-2 py-1 border text-xs ${tone.chip}`}>
               <span className="font-bold text-red-400">{s.bib}</span>
               <span className="truncate max-w-[90px]">{s.name}</span>
-              <span className={`ml-0.5 ${titleCol}`}>✕</span>
+              <span className={`ml-0.5 ${tone.title}`}>✕</span>
             </button>
           ))}
         </div>
@@ -480,32 +503,36 @@ function PickZone({ title, icon, accent, ids, toggle, skaters, placeholder, club
         className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-zinc-500" />
       {results.length > 0 && (
         <div className="mt-1 border border-zinc-800 max-h-48 overflow-y-auto">
-          {results.map(s => (
-            <button key={s.id} onClick={() => { toggle(s.id); setQ(''); }}
-              className="w-full flex items-center gap-2 px-2 py-2 active:bg-zinc-900 border-b border-zinc-900 text-left text-sm">
-              <span className="font-bold text-red-500 w-9">{s.bib}</span>
-              <span className="flex-1 truncate">{s.name}</span>
-              <span className="text-[10px] truncate max-w-[80px]" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</span>
-              <span className={titleCol}>+{icon}</span>
-            </button>
-          ))}
+          {results.map(s => {
+            const cur = getRole(roles, s);
+            return (
+              <button key={s.id} onClick={() => { assignRole(s, role); setQ(''); }}
+                className="w-full flex items-center gap-2 px-2 py-2 active:bg-zinc-900 border-b border-zinc-900 text-left text-sm">
+                <span className="font-bold text-red-500 w-9">{s.bib}</span>
+                <span className="flex-1 truncate">{s.name}</span>
+                {cur && <span className="text-[10px]">{ROLE_ICON[cur]}</span>}
+                <span className="text-[10px] truncate max-w-[70px]" style={{ color: clubColor(s.club) }}>{clubShort(s.club)}</span>
+                <span className={tone.title}>+{icon}</span>
+              </button>
+            );
+          })}
         </div>
       )}
-      {clubToggle && (
+      {clubAssign && (
         <>
           <button onClick={() => setByTeam(o => !o)}
             className="w-full py-1.5 mt-2 border border-zinc-800 text-zinc-400 text-[10px] uppercase tracking-wider">
-            {byTeam ? 'Masquer' : 'Coacher une équipe entière'}
+            {byTeam ? 'Masquer' : 'Ajouter une équipe entière'}
           </button>
           {byTeam && (
             <div className="mt-1 border border-zinc-800 max-h-56 overflow-y-auto">
               {clubs.map(c => (
-                <button key={c.club} onClick={() => clubToggle(c.club)}
+                <button key={c.club} onClick={() => clubAssign(c.club, role)}
                   className={`w-full flex items-center gap-2 px-2 py-2 border-b border-zinc-900 text-left text-xs ${c.pickedCount === c.count ? 'bg-amber-950/30' : ''}`}>
                   <span className="flex-1 truncate" style={{ color: clubColor(c.club) }}>{clubShort(c.club)}</span>
                   <span className="text-zinc-600">×{c.count}</span>
-                  <span className={c.pickedCount > 0 ? 'text-amber-400' : 'text-zinc-700'}>
-                    {c.pickedCount === c.count ? '⭐ tous' : c.pickedCount > 0 ? `⭐ ${c.pickedCount}/${c.count}` : '+⭐'}
+                  <span className={c.pickedCount > 0 ? tone.title : 'text-zinc-700'}>
+                    {c.pickedCount === c.count ? `${icon} tous` : c.pickedCount > 0 ? `${icon} ${c.pickedCount}/${c.count}` : `+${icon}`}
                   </span>
                 </button>
               ))}
@@ -517,23 +544,26 @@ function PickZone({ title, icon, accent, ids, toggle, skaters, placeholder, club
   );
 }
 
-function EntourageSection({ skaters, coached, favoris, toggleCoached, toggleFavori, coachClub }) {
+function EntourageSection({ skaters, roles, assignRole, assignRoleClub }) {
   const clubs = useMemo(() => {
     const m = {};
     skaters.forEach(s => { const c = s.club || '—'; (m[c] = m[c] || []).push(s); });
     return Object.entries(m).map(([club, list]) => ({
-      club, count: list.length, pickedCount: list.filter(s => coached.includes(s.id)).length,
+      club, count: list.length, pickedCount: list.filter(s => getRole(roles, s) === 'mine').length,
     })).sort((a, b) => b.count - a.count || a.club.localeCompare(b.club));
-  }, [skaters, coached]);
+  }, [skaters, roles]);
 
   return (
     <div className="space-y-3">
-      <PickZone title="Mes coureurs coachés" icon="⭐" accent="amber" ids={coached} toggle={toggleCoached}
-        skaters={skaters} clubToggle={coachClub} clubs={clubs}
-        placeholder="Les coureurs que tu suis et pour qui tu prends des décisions. En tête des menus de saisie." />
-      <PickZone title="Favoris de la course" icon="🔥" accent="orange" ids={favoris} toggle={toggleFavori}
+      <PickZone title="Mes coureurs" icon="⭐" accent="amber" role="mine" roles={roles} assignRole={assignRole}
+        skaters={skaters} clubAssign={assignRoleClub} clubs={clubs}
+        placeholder="Les coureurs que tu coaches et pour qui tu prends des décisions." />
+      <PickZone title="Adversaires principaux" icon="🔴" accent="red" role="primary" roles={roles} assignRole={assignRole}
         skaters={skaters}
-        placeholder="Les adversaires à surveiller (leader de coupe, sprinteur, candidat podium). Distincts des coachés." />
+        placeholder="Les plus dangereux tactiquement pour tes coureurs." />
+      <PickZone title="Adversaires secondaires" icon="🟠" accent="orange" role="secondary" roles={roles} assignRole={assignRole}
+        skaters={skaters}
+        placeholder="Les autres coureurs à surveiller." />
     </div>
   );
 }
@@ -541,11 +571,11 @@ function EntourageSection({ skaters, coached, favoris, toggleCoached, toggleFavo
 // ============================================================
 // TAB : COURSE (config + schéma + liste)
 // ============================================================
-function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, coached, favoris, toggleCoached, toggleFavori, coachClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }) {
+function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, onDisc, setCircuitLength, setTotalDistance, resetRace, config, skaters, roles, assignRole, assignRoleClub, setShowImport, activeSprintIdx, setActiveSprintIdx, sprintResults, setTab, pointsById }) {
   const [listOpen, setListOpen] = useState(false);
   return (
     <div className="p-4 space-y-5">
-      <EntourageSection {...{ skaters, coached, favoris, toggleCoached, toggleFavori, coachClub }} />
+      <EntourageSection {...{ skaters, roles, assignRole, assignRoleClub }} />
 
       <Block title="Configuration course">
         <Choice label="Catégorie" options={CATEGORIES} value={category} onChange={onCat} />
@@ -606,14 +636,15 @@ function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, 
         </button>
         <button onClick={() => setListOpen(o => !o)}
           className="w-full py-2 mt-1 border border-zinc-700 text-zinc-400 text-xs uppercase tracking-wider">
-          {listOpen ? 'Masquer' : 'Voir / gérer'} la liste · ⭐ coacher · 🔥 favori
+          {listOpen ? 'Masquer' : 'Voir / gérer'} la liste · ⭐ 🔴 🟠 rôles
         </button>
         {listOpen && (
           <div className="mt-2 max-h-80 overflow-y-auto space-y-px border border-zinc-800 p-1">
-            {skaters.slice().sort((a,b)=>(coached.includes(b.id)?2:favoris.includes(b.id)?1:0)-(coached.includes(a.id)?2:favoris.includes(a.id)?1:0)||a.bib-b.bib).map(s => (
-              <div key={s.id} className="flex items-center gap-2 py-1.5 px-1 text-sm">
-                <button onClick={() => toggleCoached(s.id)} className={`text-base ${coached.includes(s.id) ? '' : 'opacity-25 grayscale'}`}>⭐</button>
-                <button onClick={() => toggleFavori(s.id)} className={`text-base ${favoris.includes(s.id) ? '' : 'opacity-25 grayscale'}`}>🔥</button>
+            {skaters.slice().sort((a,b)=>{const o={mine:3,primary:2,secondary:1};return (o[getRole(roles,b)]||0)-(o[getRole(roles,a)]||0)||a.bib-b.bib;}).map(s => (
+              <div key={s.id} className="flex items-center gap-1.5 py-1.5 px-1 text-sm">
+                <button onClick={() => assignRole(s,'mine')} className={`text-base ${getRole(roles,s)==='mine' ? '' : 'opacity-25 grayscale'}`}>⭐</button>
+                <button onClick={() => assignRole(s,'primary')} className={`text-base ${getRole(roles,s)==='primary' ? '' : 'opacity-25 grayscale'}`}>🔴</button>
+                <button onClick={() => assignRole(s,'secondary')} className={`text-base ${getRole(roles,s)==='secondary' ? '' : 'opacity-25 grayscale'}`}>🟠</button>
                 <span className="font-bold text-red-500 w-9 text-center">{s.bib}</span>
                 <div className="flex-1 min-w-0">
                   <div className="truncate">{s.name}</div>
@@ -638,7 +669,7 @@ function CourseTab({ category, discipline, circuitLength, totalDistance, onCat, 
 // ============================================================
 // TAB : SAISIE (sprint actif + tours/statuts)
 // ============================================================
-function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, coached, favoris, sprintResults, updateSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }) {
+function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, skaters, roles, sprintResults, updateSprint, lapChanges, setLap, setStatus, pointsInfo, pointsById }) {
   const [lapsOpen, setLapsOpen] = useState(false);
   const [lapQuery, setLapQuery] = useState('');
   if (!activeSprint) return <div className="p-4 text-zinc-500 text-sm">Aucun point configuré.</div>;
@@ -672,7 +703,7 @@ function SaisieTab({ config, activeSprint, activeSprintIdx, setActiveSprintIdx, 
           className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">→</button>
       </div>
 
-      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} coached={coached} favoris={favoris} pointsById={pointsById}
+      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} roles={roles} pointsById={pointsById}
         existing={existing}
         onChange={(positions) => updateSprint(activeSprint.id, activeSprint.isFinal, positions)}
         onAdvance={() => { if (activeSprintIdx < config.sprints.length - 1) setActiveSprintIdx(activeSprintIdx + 1); }} />
@@ -737,23 +768,25 @@ function Lb({ on, c, onClick, children }) {
 // FAST SPRINT INPUT — menu déroulant intelligent au clic
 // Ordre : ⭐ coachés → 🔥 marqueurs → reste (équipe puis dossard)
 // ============================================================
-function orderedCandidates(skaters, coached, favoris, pointsById, query, excludeIds) {
+function orderedCandidates(skaters, roles, pointsById, query, excludeIds) {
   const avail = skaters.filter(s => !excludeIds.includes(s.id));
   if (query) return searchSkaters(avail, query);
-  const tCoached = [], tFavoris = [], tScored = [], tRest = [];
+  const tMine = [], tPrim = [], tSec = [], tScored = [], tRest = [];
   avail.forEach(s => {
-    if (coached.includes(s.id)) tCoached.push(s);
-    else if (favoris.includes(s.id)) tFavoris.push(s);
+    const r = getRole(roles, s);
+    if (r === 'mine') tMine.push(s);
+    else if (r === 'primary') tPrim.push(s);
+    else if (r === 'secondary') tSec.push(s);
     else if ((pointsById[s.id] || 0) > 0) tScored.push(s);
     else tRest.push(s);
   });
   const byPts = (a, b) => (pointsById[b.id] || 0) - (pointsById[a.id] || 0) || a.bib - b.bib;
-  tCoached.sort(byPts); tFavoris.sort(byPts); tScored.sort(byPts);
+  tMine.sort(byPts); tPrim.sort(byPts); tSec.sort(byPts); tScored.sort(byPts);
   tRest.sort((a, b) => (a.club || '').localeCompare(b.club || '') || a.bib - b.bib);
-  return [...tCoached, ...tFavoris, ...tScored, ...tRest];
+  return [...tMine, ...tPrim, ...tSec, ...tScored, ...tRest];
 }
 
-function FastSprintInput({ sprint, skaters, coached, favoris, pointsById, existing, onChange, onAdvance }) {
+function FastSprintInput({ sprint, skaters, roles, pointsById, existing, onChange, onAdvance }) {
   const slots = sprint.isFinal ? 3 : 2;
   const pts = sprint.isFinal ? [3, 2, 1] : [2, 1];
   const init = () => existing ? Array.from({ length: slots }, (_, i) => existing.positions[i] || null) : Array(slots).fill(null);
@@ -771,8 +804,8 @@ function FastSprintInput({ sprint, skaters, coached, favoris, pointsById, existi
 
   const excludeIds = picks.filter((p, i) => p && i !== openSlot);
   const candidates = useMemo(
-    () => orderedCandidates(skaters, coached, favoris, pointsById, query, excludeIds).slice(0, 60),
-    [skaters, coached, favoris, pointsById, query, picks, openSlot]
+    () => orderedCandidates(skaters, roles, pointsById, query, excludeIds).slice(0, 60),
+    [skaters, roles, pointsById, query, picks, openSlot]
   );
 
   const selectSkater = (id) => {
@@ -847,12 +880,12 @@ function FastSprintInput({ sprint, skaters, coached, favoris, pointsById, existi
             {candidates.length === 0 && <div className="px-2 py-3 text-zinc-600 text-xs">Aucun coureur.</div>}
             {candidates.map(s => {
               const p = pointsById[s.id] || 0;
-              const isCoached = coached.includes(s.id);
-              const isFavori = favoris.includes(s.id);
-              const tag = isCoached ? '⭐' : isFavori ? '🔥' : (p > 0 ? '📈' : '');
+              const r = getRole(roles, s);
+              const tag = r ? ROLE_ICON[r] : (p > 0 ? '📈' : '');
+              const bg = r === 'mine' ? 'bg-amber-950/20' : r === 'primary' ? 'bg-red-950/20' : r === 'secondary' ? 'bg-orange-950/15' : '';
               return (
                 <button key={s.id} onClick={() => selectSkater(s.id)}
-                  className={`w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-800 border-b border-zinc-900 text-left ${isCoached ? 'bg-amber-950/20' : isFavori ? 'bg-orange-950/15' : ''}`}>
+                  className={`w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-800 border-b border-zinc-900 text-left ${bg}`}>
                   <span className="w-5 text-center shrink-0">{tag}</span>
                   <span className="font-bold text-red-500 w-9 text-base shrink-0">{s.bib}</span>
                   <span className="flex-1 min-w-0">
@@ -930,7 +963,7 @@ function VoiceButton({ onResult }) {
 // ============================================================
 // TAB : CLASSEMENT
 // ============================================================
-function ClassementTab({ ranking, teamRanking, coached, favoris, pointsInfo }) {
+function ClassementTab({ ranking, teamRanking, roles, pointsInfo }) {
   const [view, setView] = useState('indiv'); // indiv | team
   return (
     <div className="p-4">
@@ -960,8 +993,7 @@ function ClassementTab({ ranking, teamRanking, coached, favoris, pointsInfo }) {
                 <div className="font-bold text-red-500 w-9 text-center text-sm">{r.bib}</div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm truncate flex items-center gap-1">
-                    {coached.includes(r.id) && <span className="text-xs">⭐</span>}
-                    {!coached.includes(r.id) && favoris.includes(r.id) && <span className="text-xs">🔥</span>}{r.name}
+                    {getRole(roles, r) && <span className="text-xs">{ROLE_ICON[getRole(roles, r)]}</span>}{r.name}
                   </div>
                   <div className="text-[10px] flex gap-2 items-center">
                     <span style={{color:clubColor(r.club)}} className="truncate max-w-[120px]">{clubShort(r.club)}</span>
