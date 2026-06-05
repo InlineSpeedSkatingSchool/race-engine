@@ -109,12 +109,11 @@ const ROLE_LABEL={mine:'Mes coureurs',primary:'Adversaires principaux',secondary
 function orderedCandidates(skaters, roles, pointsById, query, excludeIds){
   const avail=skaters.filter(s=>!excludeIds.includes(s.id));
   if(query)return searchSkaters(avail,query);
-  const tM=[],tP=[],tS=[],tSc=[],tR=[];
-  avail.forEach(s=>{const r=getRole(roles,s);if(r==='mine')tM.push(s);else if(r==='primary')tP.push(s);else if(r==='secondary')tS.push(s);else if((pointsById[s.id]||0)>0)tSc.push(s);else tR.push(s);});
+  const tM=[],tP=[],tS=[],tOther=[];
+  avail.forEach(s=>{const r=getRole(roles,s);if(r==='mine')tM.push(s);else if(r==='primary')tP.push(s);else if(r==='secondary')tS.push(s);else tOther.push(s);});
   const byPts=(a,b)=>(pointsById[b.id]||0)-(pointsById[a.id]||0)||a.bib-b.bib;
-  tM.sort(byPts);tP.sort(byPts);tS.sort(byPts);tSc.sort(byPts);
-  tR.sort((a,b)=>(a.club||'').localeCompare(b.club||'')||a.bib-b.bib);
-  return [...tM,...tP,...tS,...tSc,...tR];
+  tM.sort(byPts);tP.sort(byPts);tS.sort(byPts);tOther.sort(byPts); // autres classés par points
+  return [...tM,...tP,...tS,...tOther];
 }
 
 // ============================================================
@@ -167,11 +166,17 @@ const DEFAULT_LIST=[
 // STORAGE + IMPORT
 // ============================================================
 const LS={get(k,fb){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch{return fb;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}};
-async function importViaApi({imageData,mediaType,text}){
-  const res=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageData,mediaType,text})});
-  let data; try{data=await res.json();}catch{throw new Error("Import photo/texte : nécessite la fonction serveur (étape 2). La saisie manuelle marche.");}
+async function importViaApi({imageData,mediaType,pdfData,text}){
+  const res=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageData,mediaType,pdfData,text})});
+  let data; try{data=await res.json();}catch{throw new Error("Import : nécessite la fonction serveur (étape 2). La saisie manuelle marche.");}
   if(!res.ok||data.error)throw new Error(data.error||`Erreur ${res.status}`);
-  return (data.skaters||[]).map((s,i)=>({id:i+1,...s,status:null}));
+  return data.skaters||[];
+}
+// fusionne plusieurs lots en dédoublonnant par dossard ; renumérote les id
+function mergeRosters(batches){
+  const byBib=new Map();
+  batches.flat().forEach(s=>{const b=Number(s.bib);if(!b)return;if(!byBib.has(b))byBib.set(b,s);else{const ex=byBib.get(b);if((!ex.club&&s.club)||(!ex.name&&s.name))byBib.set(b,{...ex,...s});}});
+  return Array.from(byBib.values()).sort((a,b)=>a.bib-b.bib).map((s,i)=>({id:i+1,bib:Number(s.bib),name:s.name||`Coureur ${s.bib}`,club:s.club||'',nat:(s.nat||'FRA').toUpperCase(),cat:s.cat||'Senior',status:null}));
 }
 
 // ============================================================
@@ -186,126 +191,133 @@ const MODULES=[
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
 
+// ----- Événements & courses : factories + migration -----
+const rid=()=>Math.random().toString(36).slice(2,9);
+const today=()=>new Date().toISOString().slice(0,10);
+const defaultPointsConfig=()=>({category:'Senior',discipline:'Piste',circuitLength:200,totalDistance:5000});
+function defaultRaceLabel(module,cfg){
+  if(module==='points')return `${(cfg&&cfg.totalDistance/1000)||5} km Points`;
+  return moduleLabel(module);
+}
+function makeRace(module,label,cfg){const config=module==='points'?(cfg||defaultPointsConfig()):{};return {id:rid(),module,label:label||defaultRaceLabel(module,config),config,live:{sprintResults:[],lapChanges:{}}};}
+function makeEvent(name){return {id:rid(),name:name||'Nouvel événement',date:today(),location:'',roster:DEFAULT_LIST,roles:{},races:[makeRace('points','5 km Points Senior H')]};}
+
+function migrateOrSeed(){
+  const ev=LS.get('events',null);
+  if(ev&&ev.length)return ev;
+  const events=[];
+  // 1) anciennes courses sauvegardées → événements
+  (LS.get('savedRaces',[])||[]).forEach(s=>{
+    const cfg={category:s.meta?.category||'Senior',discipline:s.meta?.discipline||'Piste',circuitLength:s.meta?.circuitLength||200,totalDistance:s.meta?.totalDistance||5000};
+    events.push({id:rid(),name:s.meta?.competition||'Course sauvegardée',date:s.meta?.date||today(),location:'',roster:s.roster||DEFAULT_LIST,roles:s.roles||{},
+      races:[{id:rid(),module:s.meta?.module||'points',label:`${defaultRaceLabel(s.meta?.module||'points',cfg)}`,config:cfg,live:s.live||{sprintResults:[],lapChanges:{}}}]});
+  });
+  // 2) état courant à plat → événement actif
+  const cfg={category:LS.get('cfg_cat','Senior'),discipline:LS.get('cfg_disc','Piste'),circuitLength:LS.get('cfg_circ',200),totalDistance:LS.get('cfg_dist',5000)};
+  const meta=LS.get('meta',{});
+  events.unshift({id:rid(),name:meta.competition||'Événement actuel',date:meta.date||today(),location:'',
+    roster:LS.get('skaters',DEFAULT_LIST),roles:LS.get('roles',{}),
+    races:[{id:rid(),module:'points',label:defaultRaceLabel('points',cfg),config:cfg,live:{sprintResults:LS.get('sprintResults',[]),lapChanges:LS.get('lapChanges',{})}}]});
+  return events;
+}
+
 // ============================================================
 // APP (shell)
 // ============================================================
 function App(){
-  const [tab,setTab]=useState('saisie'); // course | coureurs | saisie | classement
-  const [moduleId,setModuleId]=useState(()=>LS.get('moduleId','points'));
-
-  // métadonnées événement
-  const [meta,setMeta]=useState(()=>LS.get('meta',{competition:'',date:new Date().toISOString().slice(0,10),raceType:'Finale'}));
-  // config (points)
-  const [category,setCategory]=useState(()=>LS.get('cfg_cat','Senior'));
-  const [discipline,setDiscipline]=useState(()=>LS.get('cfg_disc','Piste'));
-  const [circuitLength,setCircuitLength]=useState(()=>LS.get('cfg_circ',200));
-  const [totalDistance,setTotalDistance]=useState(()=>LS.get('cfg_dist',5000));
-
-  // base coureurs + rôles
-  const [skaters,setSkaters]=useState(()=>LS.get('skaters',DEFAULT_LIST));
-  const [roles,setRoles]=useState(()=>LS.get('roles',{}));
-
-  // live points
-  const [sprintResults,setSprintResults]=useState(()=>LS.get('sprintResults',[]));
-  const [lapChanges,setLapChanges]=useState(()=>LS.get('lapChanges',{}));
+  const [tab,setTab]=useState('saisie'); // event | coureurs | saisie | classement
+  const [events,setEvents]=useState(()=>migrateOrSeed());
+  const [activeEventId,setActiveEventId]=useState(()=>LS.get('activeEventId',null));
+  const [activeRaceId,setActiveRaceId]=useState(()=>LS.get('activeRaceId',null));
   const [activeSprintIdx,setActiveSprintIdx]=useState(0);
-
-  // historique
-  const [savedRaces,setSavedRaces]=useState(()=>LS.get('savedRaces',[]));
-
   const [showImport,setShowImport]=useState(false);
+  const [showSwitcher,setShowSwitcher]=useState(false);
   const [toast,setToast]=useState(null);
   const [lastSprintId,setLastSprintId]=useState(null);
   const toastTimer=useRef(null);
   const showToast=(msg,type)=>{setToast({msg,type});if(toastTimer.current)clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(null),2800);};
 
-  // persistance
-  useEffect(()=>LS.set('moduleId',moduleId),[moduleId]);
-  useEffect(()=>LS.set('meta',meta),[meta]);
-  useEffect(()=>{LS.set('cfg_cat',category);LS.set('cfg_disc',discipline);LS.set('cfg_circ',circuitLength);LS.set('cfg_dist',totalDistance);},[category,discipline,circuitLength,totalDistance]);
-  useEffect(()=>LS.set('skaters',skaters),[skaters]);
-  useEffect(()=>LS.set('roles',roles),[roles]);
-  useEffect(()=>LS.set('sprintResults',sprintResults),[sprintResults]);
-  useEffect(()=>LS.set('lapChanges',lapChanges),[lapChanges]);
-  useEffect(()=>LS.set('savedRaces',savedRaces),[savedRaces]);
-  // migration unique ancien système
-  useEffect(()=>{
-    if(Object.keys(roles).length)return;
-    const oldC=LS.get('coached',LS.get('favorites',[])),oldF=LS.get('favoris',[]);
-    if(!oldC.length&&!oldF.length)return;
-    const m={};skaters.forEach(s=>{if(oldC.includes(s.id))m[nameKey(s)]='mine';else if(oldF.includes(s.id))m[nameKey(s)]='primary';});
-    if(Object.keys(m).length)setRoles(m);
-  },[]);
+  // événement / course actifs (avec garde si id invalide)
+  const event=events.find(e=>e.id===activeEventId)||events[0];
+  const race=(event.races.find(r=>r.id===activeRaceId))||event.races[0];
 
-  const config=useMemo(()=>buildRaceConfig({category,discipline,totalDistance,circuitLength}),[category,discipline,totalDistance,circuitLength]);
-  const resetRace=()=>{setSprintResults([]);setLapChanges({});setActiveSprintIdx(0);setLastSprintId(null);};
-  const onCat=(c)=>{setCategory(c);setTotalDistance(getOfficialDistance(c,discipline));resetRace();};
-  const onDisc=(d)=>{setDiscipline(d);setTotalDistance(getOfficialDistance(category,d));resetRace();};
+  useEffect(()=>{if(event&&event.id!==activeEventId)setActiveEventId(event.id);},[event,activeEventId]);
+  useEffect(()=>{if(race&&race.id!==activeRaceId)setActiveRaceId(race.id);},[race,activeRaceId]);
+  useEffect(()=>LS.set('events',events),[events]);
+  useEffect(()=>LS.set('activeEventId',activeEventId),[activeEventId]);
+  useEffect(()=>LS.set('activeRaceId',activeRaceId),[activeRaceId]);
+
+  // working set dérivé de l'arbre
+  const skaters=event.roster;
+  const roles=event.roles;
+  const config=race.config||defaultPointsConfig();
+  const sprintResults=race.live?.sprintResults||[];
+  const lapChanges=race.live?.lapChanges||{};
+  const mod=MODULES.find(m=>m.id===race.module)||MODULES[0];
+
+  // mutations (écrivent dans l'arbre)
+  const patchEvent=(fn)=>setEvents(prev=>prev.map(e=>e.id===event.id?fn(e):e));
+  const patchRace=(fn)=>patchEvent(e=>({...e,races:e.races.map(r=>r.id===race.id?fn(r):r)}));
+  const patchConfig=(patch)=>patchRace(r=>({...r,config:{...r.config,...patch}}));
+
+  const setSkaters=(list)=>patchEvent(e=>({...e,roster:list}));
+  const setRoster=(fn)=>patchEvent(e=>({...e,roster:fn(e.roster)}));
+  const resetRace=()=>{patchRace(r=>({...r,live:{sprintResults:[],lapChanges:{}}}));setActiveSprintIdx(0);setLastSprintId(null);};
+  const onCat=(c)=>{patchConfig({category:c,totalDistance:getOfficialDistance(c,config.discipline)});resetRace();};
+  const onDisc=(d)=>{patchConfig({discipline:d,totalDistance:getOfficialDistance(config.category,d)});resetRace();};
+  const setCircuitLength=(v)=>{patchConfig({circuitLength:v});resetRace();};
+  const setTotalDistance=(v)=>{patchConfig({totalDistance:v});resetRace();};
 
   const updateSprint=(sprintId,isFinal,positions)=>{
     const filled=positions.filter(Boolean).map(Number);
-    setSprintResults(prev=>{const without=prev.filter(s=>s.sprintId!==sprintId);if(filled.length===0)return without;return [...without,{sprintId,isFinal,positions:filled}];});
+    patchRace(r=>{const without=r.live.sprintResults.filter(s=>s.sprintId!==sprintId);const next=filled.length===0?without:[...without,{sprintId,isFinal,positions:filled}];return {...r,live:{...r.live,sprintResults:next}};});
     if(filled.length===(isFinal?3:2))setLastSprintId(sprintId);
   };
-  const setLap=(id,v)=>{setLapChanges(prev=>({...prev,[id]:v}));const sk=skaters.find(s=>s.id===id);if(sk){if(v===1)showToast(`+1 TOUR · ${sk.bib} ${sk.name}`,'gain');else if(v===-1)showToast(`LAPPÉ · ${sk.bib} ${sk.name} — points annulés`,'loss');}};
-  const setStatus=(id,st)=>{setSkaters(prev=>prev.map(s=>s.id===id?{...s,status:s.status===st?null:st}:s));const sk=skaters.find(s=>s.id===id);if(sk&&sk.status!==st)showToast(`${st} · ${sk.bib} ${sk.name}`,'loss');};
-  const assignRole=(s,role)=>setRoles(prev=>{const k=nameKey(s),c={...prev};if(c[k]===role)delete c[k];else c[k]=role;return c;});
-  const assignRoleClub=(club,role)=>setRoles(prev=>{const c={...prev};const mem=skaters.filter(s=>s.club===club);const allIn=mem.every(s=>c[nameKey(s)]===role);mem.forEach(s=>{const k=nameKey(s);if(allIn)delete c[k];else c[k]=role;});return c;});
+  const setLap=(id,v)=>{patchRace(r=>({...r,live:{...r.live,lapChanges:{...r.live.lapChanges,[id]:v}}}));const sk=skaters.find(s=>s.id===id);if(sk){if(v===1)showToast(`+1 TOUR · ${sk.bib} ${sk.name}`,'gain');else if(v===-1)showToast(`LAPPÉ · ${sk.bib} ${sk.name} — points annulés`,'loss');}};
+  const setStatus=(id,st)=>{setRoster(rs=>rs.map(s=>s.id===id?{...s,status:s.status===st?null:st}:s));const sk=skaters.find(s=>s.id===id);if(sk&&sk.status!==st)showToast(`${st} · ${sk.bib} ${sk.name}`,'loss');};
+  const assignRole=(s,role)=>patchEvent(e=>{const k=nameKey(s),c={...e.roles};if(c[k]===role)delete c[k];else c[k]=role;return {...e,roles:c};});
+  const assignRoleClub=(club,role)=>patchEvent(e=>{const c={...e.roles};const mem=e.roster.filter(s=>s.club===club);const allIn=mem.every(s=>c[nameKey(s)]===role);mem.forEach(s=>{const k=nameKey(s);if(allIn)delete c[k];else c[k]=role;});return {...e,roles:c};});
   const importSkaters=(list)=>{setSkaters(list);resetRace();setShowImport(false);showToast(`${list.length} coureurs importés`,'gain');};
 
+  // gestion événements / courses
+  const createEvent=()=>{const ev=makeEvent(`Événement ${events.length+1}`);setEvents(prev=>[ev,...prev]);setActiveEventId(ev.id);setActiveRaceId(ev.races[0].id);setTab('event');};
+  const updateEventMeta=(patch)=>patchEvent(e=>({...e,...patch}));
+  const deleteEvent=(id)=>setEvents(prev=>{const next=prev.filter(e=>e.id!==id);return next.length?next:[makeEvent('Événement 1')];});
+  const selectEvent=(id)=>{const e=events.find(x=>x.id===id);if(e){setActiveEventId(id);setActiveRaceId(e.races[0]?.id);setActiveSprintIdx(0);}};
+  const addRace=(module)=>{const r=makeRace(module);patchEvent(e=>({...e,races:[...e.races,r]}));setActiveRaceId(r.id);setActiveSprintIdx(0);};
+  const selectRace=(id)=>{setActiveRaceId(id);setActiveSprintIdx(0);setLastSprintId(null);};
+  const renameRace=(id,label)=>patchEvent(e=>({...e,races:e.races.map(r=>r.id===id?{...r,label}:r)}));
+  const deleteRace=(id)=>patchEvent(e=>({...e,races:e.races.length>1?e.races.filter(r=>r.id!==id):e.races}));
+
+  const structure=useMemo(()=>mod.id==='points'?buildRaceConfig(config):{sprints:[]},[mod.id,config]);
   const ranking=useMemo(()=>computeRanking(skaters,sprintResults,lapChanges),[skaters,sprintResults,lapChanges]);
   const prevRanking=useMemo(()=>{if(lastSprintId==null)return null;const w=sprintResults.filter(s=>s.sprintId!==lastSprintId);if(w.length===sprintResults.length)return null;return computeRanking(skaters,w,lapChanges);},[skaters,sprintResults,lapChanges,lastSprintId]);
   const rankingWithMove=useMemo(()=>{if(!prevRanking)return ranking.map(r=>({...r,move:0}));const map={};prevRanking.forEach(p=>{map[p.id]=p.rank;});return ranking.map(r=>({...r,move:map[r.id]!=null?map[r.id]-r.rank:0}));},[ranking,prevRanking]);
-  const pointsInfo=useMemo(()=>{const rec=new Set(sprintResults.map(s=>s.sprintId));let total=0,maxSolo=0;config.sprints.forEach(sp=>{if(rec.has(sp.id))return;total+=sp.isFinal?6:3;maxSolo+=sp.isFinal?3:2;});return {total,maxSolo,remaining:config.sprints.length-sprintResults.length};},[config,sprintResults]);
+  const pointsInfo=useMemo(()=>{const rec=new Set(sprintResults.map(s=>s.sprintId));let total=0,maxSolo=0;structure.sprints.forEach(sp=>{if(rec.has(sp.id))return;total+=sp.isFinal?6:3;maxSolo+=sp.isFinal?3:2;});return {total,maxSolo,remaining:structure.sprints.length-sprintResults.length};},[structure,sprintResults]);
   const teamRanking=useMemo(()=>computeTeamRanking(ranking),[ranking]);
   const pointsById=useMemo(()=>{const m={};ranking.forEach(r=>{m[r.id]=r.points;});return m;},[ranking]);
-  const activeSprint=config.sprints[activeSprintIdx];
-  const mod=MODULES.find(m=>m.id===moduleId)||MODULES[0];
-
-  // SAUVEGARDE COURSE
-  const saveRace=()=>{
-    const snap={
-      id:Date.now().toString(36),savedAt:new Date().toISOString(),
-      meta:{...meta,category,discipline,circuitLength,totalDistance,module:moduleId},
-      roster:skaters, roles:{...roles},
-      live:{sprintResults,lapChanges},
-      result:ranking.map(r=>({rank:r.rank,bib:r.bib,name:r.name,club:r.club,nat:r.nat,points:r.points,laps:r.laps,status:r.status})),
-    };
-    setSavedRaces(prev=>[snap,...prev]);
-    showToast('Course sauvegardée dans l\'historique','gain');
-  };
-  const loadRace=(snap)=>{
-    setMeta({competition:snap.meta.competition||'',date:snap.meta.date||'',raceType:snap.meta.raceType||''});
-    setModuleId(snap.meta.module||'points');
-    setCategory(snap.meta.category||'Senior');setDiscipline(snap.meta.discipline||'Piste');
-    setCircuitLength(snap.meta.circuitLength||200);setTotalDistance(snap.meta.totalDistance||5000);
-    setSkaters(snap.roster||DEFAULT_LIST);setRoles(snap.roles||{});
-    setSprintResults(snap.live?.sprintResults||[]);setLapChanges(snap.live?.lapChanges||{});
-    setActiveSprintIdx(0);setLastSprintId(null);setTab('saisie');
-    showToast('Course chargée','gain');
-  };
-  const deleteRace=(id)=>setSavedRaces(prev=>prev.filter(r=>r.id!==id));
-
+  const rankById=useMemo(()=>{const m={};ranking.forEach(r=>{m[r.id]=r.rank;});return m;},[ranking]);
+  const activeSprint=structure.sprints[activeSprintIdx];
   const roleCounts=useMemo(()=>{const c={mine:0,primary:0,secondary:0};Object.values(roles).forEach(r=>{if(c[r]!=null)c[r]++;});return c;},[roles]);
 
   return (
     <div className="flex flex-col h-full bg-zinc-950 no-tap">
-      <header className="safe-top bg-black border-b border-zinc-800 px-4 pt-2 pb-3 flex items-center justify-between shrink-0">
-        <div>
-          <div className="text-[9px] tracking-[0.3em] text-red-500 uppercase">{mod.icon} {mod.label}</div>
-          <h1 className="text-base font-bold leading-none truncate max-w-[55vw]">{meta.competition || 'RACE ENGINE'}</h1>
-        </div>
-        <div className="text-right">
-          <div className="text-[10px] text-zinc-500 uppercase">{category} · {discipline}</div>
-          <div className="text-xs text-zinc-300">{sprintResults.length}/{config.sprints.length} pts</div>
+      <header className="safe-top bg-black border-b border-zinc-800 px-3 pt-2 pb-2 flex items-center gap-2 shrink-0">
+        <button onClick={()=>setShowSwitcher(true)} className="flex-1 min-w-0 text-left">
+          <div className="text-[9px] tracking-[0.25em] text-red-500 uppercase truncate">{event.name}</div>
+          <div className="text-sm font-bold leading-none truncate flex items-center gap-1">{mod.icon} {race.label} <span className="text-zinc-600 text-xs">▾</span></div>
+        </button>
+        <div className="text-right shrink-0">
+          <div className="text-[10px] text-zinc-500 uppercase">{config.category} · {config.discipline}</div>
+          <div className="text-xs text-zinc-300">{sprintResults.length}/{structure.sprints.length} pts</div>
         </div>
       </header>
 
       <main className="flex-1 overflow-y-auto">
-        {tab==='course' && <SetupScreen {...{meta,setMeta,moduleId,setModuleId,category,discipline,circuitLength,totalDistance,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,config,saveRace,savedRaces,loadRace,deleteRace}} />}
+        {tab==='event' && <EventScreen {...{event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent}} />}
         {tab==='coureurs' && <CoureursScreen {...{skaters,roles,assignRole,assignRoleClub,setShowImport,roleCounts}} />}
         {tab==='saisie' && (mod.operational
-          ? <PointsInput {...{config,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById}} />
+          ? <PointsInput {...{structure,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById,rankById}} />
           : <ModuleSoon mod={mod} />)}
         {tab==='classement' && (mod.operational
           ? <PointsBoard {...{ranking:rankingWithMove,teamRanking,roles,pointsInfo}} />
@@ -319,14 +331,47 @@ function App(){
       )}
 
       <nav className="safe-bottom bg-black border-t border-zinc-800 grid grid-cols-4 shrink-0">
-        {[{id:'course',label:'COURSE',icon:'⚙'},{id:'coureurs',label:'COUREURS',icon:'👥'},{id:'saisie',label:'SAISIE',icon:'⏱'},{id:'classement',label:'CLASST',icon:'🏆'}].map(t=>(
+        {[{id:'event',label:'ÉVÉNEMENT',icon:'📅'},{id:'coureurs',label:'COUREURS',icon:'👥'},{id:'saisie',label:'SAISIE',icon:'⏱'},{id:'classement',label:'CLASST',icon:'🏆'}].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} className={`py-3 flex flex-col items-center gap-0.5 ${tab===t.id?'text-red-500':'text-zinc-500'}`}>
             <span className="text-base leading-none">{t.icon}</span><span className="text-[9px] tracking-wider">{t.label}</span>
           </button>
         ))}
       </nav>
 
+      {showSwitcher && <Switcher {...{events,event,race,selectEvent,selectRace,createEvent,addRace,onClose:()=>setShowSwitcher(false),setTab}} />}
       {showImport && <ImportModal onClose={()=>setShowImport(false)} onImport={importSkaters} />}
+    </div>
+  );
+}
+
+// Sélecteur rapide événement / course (depuis le header)
+function Switcher({events,event,race,selectEvent,selectRace,createEvent,addRace,onClose,setTab}){
+  return (
+    <div className="fixed inset-0 bg-black/85 z-50 flex items-end justify-center" onClick={onClose}>
+      <div className="bg-zinc-950 border border-zinc-700 w-full max-h-[80vh] overflow-y-auto safe-bottom" onClick={e=>e.stopPropagation()}>
+        <div className="border-b border-zinc-800 px-4 py-3 flex justify-between items-center sticky top-0 bg-zinc-950"><h2 className="text-sm font-bold uppercase tracking-wider">Événements & courses</h2><button onClick={onClose} className="text-zinc-500 text-xl px-2">✕</button></div>
+        <div className="p-3 space-y-3">
+          {events.map(ev=>(
+            <div key={ev.id} className={`border ${ev.id===event.id?'border-red-600':'border-zinc-800'}`}>
+              <button onClick={()=>selectEvent(ev.id)} className="w-full text-left px-3 py-2 flex justify-between items-center">
+                <span className="text-sm font-bold truncate">{ev.name}</span><span className="text-[10px] text-zinc-500">{ev.date} · {ev.races.length} course{ev.races.length>1?'s':''}</span>
+              </button>
+              {ev.id===event.id && (
+                <div className="border-t border-zinc-800 p-1 space-y-px">
+                  {ev.races.map(r=>{const m=MODULES.find(x=>x.id===r.module)||{};return (
+                    <button key={r.id} onClick={()=>{selectRace(r.id);onClose();setTab('saisie');}} className={`w-full flex items-center gap-2 px-2 py-2 text-left text-sm ${r.id===race.id?'bg-red-950/30 text-red-300':'text-zinc-300'}`}>
+                      <span>{m.icon}</span><span className="flex-1 truncate">{r.label}</span>{!m.operational&&<span className="text-[9px] text-zinc-600">à venir</span>}
+                    </button>);})}
+                  <div className="flex flex-wrap gap-1 p-1">
+                    {MODULES.map(m=><button key={m.id} onClick={()=>addRace(m.id)} className="px-2 py-1 border border-zinc-800 text-zinc-400 text-[10px]">+ {m.icon} {m.label}</button>)}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          <button onClick={()=>{createEvent();onClose();}} className="w-full py-2.5 border border-zinc-700 text-zinc-300 text-sm uppercase tracking-wider">+ Nouvel événement</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -338,95 +383,87 @@ function ModuleSoon({mod}){
 // ============================================================
 // ÉCRAN COURSE (réglages + sauvegarde + historique)
 // ============================================================
-function SetupScreen({meta,setMeta,moduleId,setModuleId,category,discipline,circuitLength,totalDistance,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,config,saveRace,savedRaces,loadRace,deleteRace}){
-  const upd=(k,v)=>setMeta(m=>({...m,[k]:v}));
+function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent}){
+  const upd=(k,v)=>updateEventMeta({[k]:v});
   return (
     <div className="p-4 space-y-5">
-      <Block title="Compétition">
-        <Field label="Nom de la compétition"><input value={meta.competition} onChange={e=>upd('competition',e.target.value)} placeholder="ex : Coupe de France Pontault" className="w-full bg-black border border-zinc-700 px-3 py-2 text-base outline-none focus:border-red-500" /></Field>
+      <Block title="Événement">
+        <Field label="Nom de l'événement"><input value={event.name} onChange={e=>upd('name',e.target.value)} placeholder="ex : Championnats d'Europe 2026" className="w-full bg-black border border-zinc-700 px-3 py-2 text-base outline-none focus:border-red-500" /></Field>
         <div className="grid grid-cols-2 gap-2">
-          <Field label="Date"><input type="date" value={meta.date} onChange={e=>upd('date',e.target.value)} className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500" /></Field>
-          <Field label="Type de course">
-            <select value={meta.raceType} onChange={e=>upd('raceType',e.target.value)} className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500">
-              {['Finale','Demi-finale','Série','Manche','Qualif'].map(o=><option key={o}>{o}</option>)}
-            </select>
-          </Field>
+          <Field label="Date"><input type="date" value={event.date} onChange={e=>upd('date',e.target.value)} className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500" /></Field>
+          <Field label="Lieu"><input value={event.location||''} onChange={e=>upd('location',e.target.value)} placeholder="ex : Geisingen" className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500" /></Field>
         </div>
       </Block>
 
-      <Block title="Épreuve (module)">
+      <Block title={`Courses de l'événement · ${event.races.length}`}>
+        <div className="space-y-1">
+          {event.races.map(r=><RaceRow key={r.id} r={r} active={r.id===race.id} onSelect={()=>selectRace(r.id)} onRename={(l)=>renameRace(r.id,l)} onDelete={()=>{if(event.races.length>1&&confirm('Supprimer cette course ?'))deleteRace(r.id);}} canDelete={event.races.length>1} />)}
+        </div>
+        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mt-2 mb-1">Ajouter une course</div>
         <div className="grid grid-cols-2 gap-1">
           {MODULES.map(m=>(
-            <button key={m.id} onClick={()=>m.operational&&setModuleId(m.id)} disabled={!m.operational}
-              className={`py-2.5 text-xs border flex flex-col items-center gap-0.5 ${moduleId===m.id?'bg-red-600 border-red-600 text-white':m.operational?'border-zinc-700 text-zinc-300':'border-zinc-800 text-zinc-600'}`}>
-              <span className="text-base">{m.icon}</span>
-              <span>{m.label}{!m.operational && <span className="block text-[8px] text-zinc-600">à venir</span>}</span>
+            <button key={m.id} onClick={()=>addRace(m.id)} className={`py-2 text-xs border flex items-center justify-center gap-1 ${m.operational?'border-zinc-700 text-zinc-300':'border-zinc-800 text-zinc-500'}`}>
+              <span>{m.icon}</span><span>{m.label}{!m.operational&&' (à venir)'}</span>
             </button>
           ))}
         </div>
       </Block>
 
-      {moduleId==='points' && (
-        <Block title="Réglages course à points">
-          <Choice label="Catégorie" options={CATEGORIES} value={category} onChange={onCat} />
-          <Choice label="Discipline" options={DISCIPLINES} value={discipline} onChange={onDisc} />
+      {mod.id==='points' && (
+        <Block title={`Réglages · ${race.label}`}>
+          <Choice label="Catégorie" options={CATEGORIES} value={config.category} onChange={onCat} />
+          <Choice label="Discipline" options={DISCIPLINES} value={config.discipline} onChange={onDisc} />
           <div className="grid grid-cols-2 gap-2">
-            <Field label="Circuit (m)"><input type="number" inputMode="numeric" value={circuitLength} onChange={e=>{setCircuitLength(Number(e.target.value));resetRace();}} className="w-full bg-black border border-zinc-700 px-2 py-2 text-base outline-none focus:border-red-500" /></Field>
-            <Field label="Distance (m)"><input type="number" inputMode="numeric" value={totalDistance} onChange={e=>{setTotalDistance(Number(e.target.value));resetRace();}} className="w-full bg-black border border-zinc-700 px-2 py-2 text-base outline-none focus:border-red-500" /></Field>
+            <Field label="Circuit (m)"><input type="number" inputMode="numeric" value={config.circuitLength} onChange={e=>setCircuitLength(Number(e.target.value))} className="w-full bg-black border border-zinc-700 px-2 py-2 text-base outline-none focus:border-red-500" /></Field>
+            <Field label="Distance (m)"><input type="number" inputMode="numeric" value={config.totalDistance} onChange={e=>setTotalDistance(Number(e.target.value))} className="w-full bg-black border border-zinc-700 px-2 py-2 text-base outline-none focus:border-red-500" /></Field>
           </div>
-          <div className="flex gap-1">{[200,250,333,400,500].map(v=><button key={v} onClick={()=>{setCircuitLength(v);resetRace();}} className="flex-1 text-xs py-1.5 border border-zinc-800 active:bg-zinc-800 text-zinc-400">{v}</button>)}</div>
+          <div className="flex gap-1">{[200,250,333,400,500].map(v=><button key={v} onClick={()=>setCircuitLength(v)} className="flex-1 text-xs py-1.5 border border-zinc-800 active:bg-zinc-800 text-zinc-400">{v}</button>)}</div>
           <div className="grid grid-cols-4 gap-x-3 mt-1">
-            <Stat label="Tours" value={config.totalLaps} /><Stat label="Neutr." value={config.neutralizedLaps} />
-            <Stat label="Points" value={config.sprints.length-1} /><Stat label="Fréq" value={config.frequency===1?'1/t':'1/2t'} />
+            <Stat label="Tours" value={structure.totalLaps} /><Stat label="Neutr." value={structure.neutralizedLaps} />
+            <Stat label="Points" value={structure.sprints.length-1} /><Stat label="Fréq" value={structure.frequency===1?'1/t':'1/2t'} />
           </div>
-          {config.warnings.map((w,i)=><div key={i} className="border-l-2 border-amber-500 bg-amber-950/30 p-2 text-xs text-amber-200">⚠ {w}</div>)}
+          {structure.warnings.map((w,i)=><div key={i} className="border-l-2 border-amber-500 bg-amber-950/30 p-2 text-xs text-amber-200">⚠ {w}</div>)}
+          <button onClick={()=>{if(confirm('Réinitialiser les résultats de cette course ?'))resetRace();}} className="w-full py-2 border border-zinc-700 text-zinc-500 text-xs uppercase tracking-wider">Réinitialiser les résultats</button>
         </Block>
       )}
 
-      <div className="grid grid-cols-2 gap-2">
-        <button onClick={saveRace} className="py-3 bg-red-600 active:bg-red-500 text-white text-sm font-bold uppercase tracking-wider">💾 Sauvegarder</button>
-        <button onClick={()=>{if(confirm('Réinitialiser les résultats de la course en cours ?'))resetRace();}} className="py-3 border border-zinc-700 text-zinc-400 text-sm uppercase tracking-wider">Nouveaux résultats</button>
-      </div>
-
-      <Block title={`Historique · ${savedRaces.length} course${savedRaces.length>1?'s':''}`}>
-        {savedRaces.length===0 && <div className="text-xs text-zinc-500">Aucune course sauvegardée. La sauvegarde nourrira plus tard les profils de coureurs et l'analyse tactique.</div>}
+      <Block title={`Tous les événements · ${events.length}`}>
         <div className="space-y-1">
-          {savedRaces.map(r=><HistoryRow key={r.id} race={r} onLoad={loadRace} onDelete={deleteRace} />)}
+          {events.map(ev=>(
+            <div key={ev.id} className={`flex items-center gap-2 p-2 border ${ev.id===event.id?'border-red-600':'border-zinc-800'}`}>
+              <button onClick={()=>selectEvent(ev.id)} className="flex-1 min-w-0 text-left">
+                <div className="text-sm truncate">{ev.name}</div>
+                <div className="text-[10px] text-zinc-500">{ev.date} · {ev.location||'—'} · {ev.races.length} course{ev.races.length>1?'s':''} · {ev.roster.length} coureurs</div>
+              </button>
+              {ev.id===event.id?<span className="text-[10px] text-red-500 uppercase">actif</span>:null}
+              <button onClick={()=>{if(confirm('Supprimer cet événement et ses courses ?'))deleteEvent(ev.id);}} className="px-2 py-1 border border-zinc-800 text-zinc-600 text-xs">🗑</button>
+            </div>
+          ))}
         </div>
+        <button onClick={createEvent} className="w-full py-2.5 mt-1 border border-zinc-700 text-zinc-300 text-sm uppercase tracking-wider">+ Nouvel événement</button>
       </Block>
       <div className="h-4" />
     </div>
   );
 }
 
-function HistoryRow({race,onLoad,onDelete}){
-  const [open,setOpen]=useState(false);
-  const winner=race.result&&race.result[0];
+function RaceRow({r,active,onSelect,onRename,onDelete,canDelete}){
+  const [edit,setEdit]=useState(false);
+  const [val,setVal]=useState(r.label);
+  const m=MODULES.find(x=>x.id===r.module)||{};
   return (
-    <div className="border border-zinc-800">
-      <div className="flex items-center gap-2 p-2">
-        <div className="flex-1 min-w-0">
-          <div className="text-sm truncate">{race.meta.competition||'Course'} <span className="text-zinc-600">· {race.meta.raceType||''}</span></div>
-          <div className="text-[10px] text-zinc-500">{race.meta.date} · {moduleLabel(race.meta.module)} · {race.meta.category} {race.meta.discipline} · {(race.roster||[]).length} coureurs</div>
-          {winner && <div className="text-[10px] text-zinc-400">🏆 {winner.bib} {winner.name} — {winner.points} pts</div>}
-        </div>
-        <button onClick={()=>setOpen(o=>!o)} className="px-2 py-1 border border-zinc-700 text-zinc-400 text-xs">{open?'▲':'👁'}</button>
-        <button onClick={()=>onLoad(race)} className="px-2 py-1 border border-zinc-700 text-zinc-300 text-xs">📂</button>
-        <button onClick={()=>{if(confirm('Supprimer cette course ?'))onDelete(race.id);}} className="px-2 py-1 border border-zinc-800 text-zinc-600 text-xs">🗑</button>
-      </div>
-      {open && (
-        <div className="border-t border-zinc-800 max-h-60 overflow-y-auto p-1 space-y-px">
-          {(race.result||[]).map(r=>(
-            <div key={r.bib} className="flex items-center gap-2 text-xs py-1">
-              <span className="w-5 text-right text-zinc-400">{r.rank}</span>
-              <span className="font-bold text-red-500 w-9 text-center">{r.bib}</span>
-              <span className="flex-1 truncate">{r.name}</span>
-              {r.laps!==0 && <span className={r.laps>0?'text-emerald-400':'text-red-400'}>{r.laps>0?'+':''}{r.laps}T</span>}
-              <span className="font-bold">{r.points}</span>
-            </div>
-          ))}
-        </div>
+    <div className={`flex items-center gap-2 p-2 border ${active?'border-red-600 bg-red-950/20':'border-zinc-800'}`}>
+      <span className="shrink-0">{m.icon}</span>
+      {edit?(
+        <input autoFocus value={val} onChange={e=>setVal(e.target.value)} onBlur={()=>{onRename(val||r.label);setEdit(false);}} className="flex-1 bg-black border border-zinc-700 px-2 py-1 text-sm outline-none focus:border-red-500" />
+      ):(
+        <button onClick={onSelect} className="flex-1 min-w-0 text-left">
+          <div className="text-sm truncate">{r.label}</div>
+          <div className="text-[10px] text-zinc-500">{m.label}{!m.operational&&' · à venir'}{active?' · active':''}</div>
+        </button>
       )}
+      <button onClick={()=>setEdit(e=>!e)} className="px-2 py-1 border border-zinc-700 text-zinc-400 text-xs">✏️</button>
+      {canDelete && <button onClick={onDelete} className="px-2 py-1 border border-zinc-800 text-zinc-600 text-xs">🗑</button>}
     </div>
   );
 }
@@ -507,7 +544,7 @@ function Counter({icon,label,n}){return <div className="border border-zinc-800 p
 // ============================================================
 // MODULE POINTS — Saisie
 // ============================================================
-function PointsInput({config,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById}){
+function PointsInput({structure,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById,rankById}){
   const [lapsOpen,setLapsOpen]=useState(false);
   const [lapQuery,setLapQuery]=useState('');
   if(!activeSprint)return <div className="p-4 text-zinc-500 text-sm">Aucun point configuré.</div>;
@@ -528,11 +565,11 @@ function PointsInput({config,activeSprint,activeSprintIdx,setActiveSprintIdx,ska
           <div className="text-3xl font-bold">{activeSprint.isFinal?<span className="text-red-500">ARRIVÉE</span>:<>POINT <span className="text-red-500">{activeSprint.label}</span></>}</div>
           {existing && <div className="text-[10px] text-emerald-400">✓ enregistré — clique une place pour corriger</div>}
         </div>
-        <button onClick={()=>activeSprintIdx<config.sprints.length-1&&setActiveSprintIdx(activeSprintIdx+1)} disabled={activeSprintIdx===config.sprints.length-1} className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">→</button>
+        <button onClick={()=>activeSprintIdx<structure.sprints.length-1&&setActiveSprintIdx(activeSprintIdx+1)} disabled={activeSprintIdx===structure.sprints.length-1} className="px-4 py-3 border border-zinc-700 text-zinc-400 disabled:opacity-30 text-lg">→</button>
       </div>
-      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} roles={roles} pointsById={pointsById} existing={existing}
+      <FastSprintInput key={activeSprint.id} sprint={activeSprint} skaters={skaters} roles={roles} pointsById={pointsById} rankById={rankById} existing={existing}
         onChange={(p)=>updateSprint(activeSprint.id,activeSprint.isFinal,p)}
-        onAdvance={()=>{if(activeSprintIdx<config.sprints.length-1)setActiveSprintIdx(activeSprintIdx+1);}} />
+        onAdvance={()=>{if(activeSprintIdx<structure.sprints.length-1)setActiveSprintIdx(activeSprintIdx+1);}} />
       <div className="border-t border-zinc-800 pt-3">
         <button onClick={()=>setLapsOpen(o=>!o)} className="w-full flex justify-between items-center text-[10px] tracking-[0.25em] text-zinc-500 uppercase"><span>Prises de tour & statuts</span><span>{lapsOpen?'▲':'▼'}</span></button>
         {lapsOpen && (
@@ -556,7 +593,7 @@ function PointsInput({config,activeSprint,activeSprintIdx,setActiveSprintIdx,ska
 }
 function Lb({on,c,onClick,children}){const cls=on?{red:'border-red-500 bg-red-500/20 text-red-400',emerald:'border-emerald-500 bg-emerald-500/20 text-emerald-400',amber:'border-amber-500 bg-amber-500/20 text-amber-400',zinc:'border-zinc-500 bg-zinc-800 text-zinc-200'}[c]:'border-zinc-800 text-zinc-600';return <button onClick={onClick} className={`px-1.5 py-1 border text-[10px] ${cls}`}>{children}</button>;}
 
-function FastSprintInput({sprint,skaters,roles,pointsById,existing,onChange,onAdvance}){
+function FastSprintInput({sprint,skaters,roles,pointsById,rankById,existing,onChange,onAdvance}){
   const slots=sprint.isFinal?3:2;
   const pts=sprint.isFinal?[3,2,1]:[2,1];
   const init=()=>existing?Array.from({length:slots},(_,i)=>existing.positions[i]||null):Array(slots).fill(null);
@@ -590,12 +627,13 @@ function FastSprintInput({sprint,skaters,roles,pointsById,existing,onChange,onAd
           <div className="p-1.5 border-b border-zinc-800 flex items-center gap-2"><span className="text-[10px] text-zinc-500 uppercase shrink-0">P{openSlot+1} →</span><input value={query} inputMode="numeric" onChange={e=>setQuery(e.target.value)} placeholder="ou tape dossard / nom…" className="flex-1 bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-red-500" /></div>
           <div className="max-h-[44vh] overflow-y-auto">
             {candidates.length===0 && <div className="px-2 py-3 text-zinc-600 text-xs">Aucun coureur.</div>}
-            {candidates.map(s=>{const p=pointsById[s.id]||0;const r=getRole(roles,s);const tag=r?ROLE_ICON[r]:(p>0?'📈':'');const bg=r==='mine'?'bg-amber-950/20':r==='primary'?'bg-red-950/20':r==='secondary'?'bg-orange-950/15':'';return (
+            {candidates.map(s=>{const p=pointsById[s.id]||0;const rk=rankById?rankById[s.id]:null;const r=getRole(roles,s);const tag=r?ROLE_ICON[r]:(p>0?'📈':'');const bg=r==='mine'?'bg-amber-950/20':r==='primary'?'bg-red-950/20':r==='secondary'?'bg-orange-950/15':'';return (
               <button key={s.id} onClick={()=>selectSkater(s.id)} className={`w-full flex items-center gap-2 px-2 py-2.5 active:bg-zinc-800 border-b border-zinc-900 text-left ${bg}`}>
                 <span className="w-5 text-center shrink-0">{tag}</span>
                 <span className="font-bold text-red-500 w-9 text-base shrink-0">{s.bib}</span>
                 <span className="flex-1 min-w-0"><span className="text-sm truncate block">{s.name}</span><span className="text-[10px] truncate block" style={{color:clubColor(s.club)}}>{clubShort(s.club)}</span></span>
-                <span className={`text-sm font-bold shrink-0 ${p>0?'text-zinc-200':'text-zinc-600'}`}>{p}<span className="text-[8px] text-zinc-600 ml-0.5">pts</span></span>
+                {rk!=null && <span className="text-[10px] text-zinc-500 shrink-0">{rk}<span className="text-zinc-700">e</span></span>}
+                <span className={`text-sm font-bold shrink-0 w-9 text-right ${p>0?'text-zinc-200':'text-zinc-600'}`}>{p}<span className="text-[8px] text-zinc-600 ml-0.5">pt</span></span>
               </button>);})}
           </div>
         </div>
@@ -657,27 +695,55 @@ function PointsBoard({ranking,teamRanking,roles,pointsInfo}){
 function ImportModal({onClose,onImport}){
   const [tab,setTab]=useState('photo');
   const [loading,setLoading]=useState(false);
+  const [progress,setProgress]=useState('');
   const [error,setError]=useState(null);
   const [preview,setPreview]=useState(null);
   const [text,setText]=useState('');
-  const doPhoto=async(e)=>{const file=e.target.files?.[0];if(!file)return;setLoading(true);setError(null);setPreview(null);try{const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=()=>rej(new Error('lecture'));r.readAsDataURL(file);});const list=await importViaApi({imageData:b64,mediaType:file.type});list.length?setPreview(list):setError('Aucun coureur détecté.');}catch(err){setError(err.message);}finally{setLoading(false);}};
-  const doText=async()=>{if(!text.trim())return;setLoading(true);setError(null);setPreview(null);try{const list=await importViaApi({text});list.length?setPreview(list):setError('Aucun coureur détecté.');}catch(err){setError(err.message);}finally{setLoading(false);}};
+
+  const fileToB64=(file)=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=()=>rej(new Error('lecture impossible'));r.readAsDataURL(file);});
+
+  // plusieurs fichiers (images et/ou PDF) traités comme UNE seule startlist
+  const doFiles=async(e)=>{
+    const files=Array.from(e.target.files||[]);if(!files.length)return;
+    setLoading(true);setError(null);setPreview(null);
+    const batches=[];const errs=[];
+    for(let i=0;i<files.length;i++){
+      const f=files[i];setProgress(`Analyse ${i+1}/${files.length} — ${f.name}`);
+      try{
+        const b64=await fileToB64(f);
+        const isPdf=f.type==='application/pdf'||/\.pdf$/i.test(f.name);
+        const list=await importViaApi(isPdf?{pdfData:b64}:{imageData:b64,mediaType:f.type||'image/jpeg'});
+        batches.push(list);
+      }catch(err){errs.push(`${f.name}: ${err.message}`);}
+    }
+    setProgress('');
+    const merged=mergeRosters(batches);
+    if(!merged.length){setError(errs[0]||'Aucun coureur détecté sur les fichiers fournis.');}
+    else{setPreview(merged);if(errs.length)setError(`${errs.length} fichier(s) en erreur — le reste a été fusionné.`);}
+    setLoading(false);
+  };
+  const doText=async()=>{if(!text.trim())return;setLoading(true);setError(null);setPreview(null);try{const list=await importViaApi({text});const merged=mergeRosters([list]);merged.length?setPreview(merged):setError('Aucun coureur détecté.');}catch(err){setError(err.message);}finally{setLoading(false);}};
+
   return (
     <div className="fixed inset-0 bg-black/85 z-50 flex items-end sm:items-center justify-center">
       <div className="bg-zinc-950 border border-zinc-700 w-full sm:max-w-lg max-h-[90vh] overflow-y-auto safe-bottom">
         <div className="border-b border-zinc-800 px-4 py-3 flex justify-between items-center sticky top-0 bg-zinc-950"><h2 className="text-sm font-bold uppercase tracking-wider">Import starting list</h2><button onClick={onClose} className="text-zinc-500 active:text-red-500 text-xl px-2">✕</button></div>
         <div className="p-4">
-          <div className="flex gap-1 mb-4">{[['photo','📷 Photo'],['paste','📋 Texte'],['manual','✎ Manuel']].map(([id,lbl])=><button key={id} onClick={()=>{setTab(id);setPreview(null);setError(null);}} className={`flex-1 py-2 text-xs uppercase border ${tab===id?'border-red-500 text-red-400':'border-zinc-800 text-zinc-500'}`}>{lbl}</button>)}</div>
-          {tab==='photo'&&<div><p className="text-xs text-zinc-400 mb-3">Photo ou capture de la startlist. L'IA extrait dossard / nom / club / pays.</p><input type="file" accept="image/*" capture="environment" onChange={doPhoto} disabled={loading} className="block w-full text-xs text-zinc-400 file:mr-3 file:py-2 file:px-4 file:border-0 file:bg-red-600 file:text-white file:text-xs file:uppercase" /></div>}
+          <div className="flex gap-1 mb-4">{[['photo','📷 Photos / PDF'],['paste','📋 Texte'],['manual','✎ Manuel']].map(([id,lbl])=><button key={id} onClick={()=>{setTab(id);setPreview(null);setError(null);}} className={`flex-1 py-2 text-xs uppercase border ${tab===id?'border-red-500 text-red-400':'border-zinc-800 text-zinc-500'}`}>{lbl}</button>)}</div>
+          {tab==='photo'&&<div>
+            <p className="text-xs text-zinc-400 mb-3">Sélectionne <span className="text-zinc-200">une ou plusieurs</span> photos / captures / PDF. Tout est fusionné en une seule liste et les doublons (même dossard) sont supprimés.</p>
+            <input type="file" accept="image/*,application/pdf" multiple onChange={doFiles} disabled={loading} className="block w-full text-xs text-zinc-400 file:mr-3 file:py-2 file:px-4 file:border-0 file:bg-red-600 file:text-white file:text-xs file:uppercase" />
+            <p className="text-[10px] text-zinc-600 mt-2">Astuce : sélectionne les 3 captures (401-420, 421-440, 441-460) d'un coup → un seul roster.</p>
+          </div>}
           {tab==='paste'&&<div><p className="text-xs text-zinc-400 mb-3">Colle la liste (site, PDF, email…).</p><textarea value={text} onChange={e=>setText(e.target.value)} rows={6} placeholder={"464 BEDDIAF Nolan MANAO\n449 ROCHER Matthis MANAO"} className="w-full bg-black border border-zinc-700 p-3 text-xs outline-none focus:border-red-500" /><button onClick={doText} disabled={loading||!text.trim()} className="mt-2 w-full py-2 bg-red-600 active:bg-red-500 disabled:opacity-40 text-white text-xs uppercase tracking-wider">Analyser</button></div>}
           {tab==='manual'&&<ManualEntry onSave={onImport} />}
-          {loading&&<div className="mt-3 text-xs text-amber-400">Analyse en cours…</div>}
-          {error&&<div className="mt-3 text-xs text-red-400 border border-red-900 bg-red-950/30 p-2">⚠ {error}</div>}
+          {loading&&<div className="mt-3 text-xs text-amber-400">{progress||'Analyse en cours…'}</div>}
+          {error&&<div className="mt-3 text-xs text-amber-400 border border-amber-900 bg-amber-950/30 p-2">⚠ {error}</div>}
           {preview&&(
             <div className="mt-4 border border-emerald-700 bg-emerald-950/20 p-3">
-              <div className="text-xs text-emerald-400 uppercase mb-2">✓ {preview.length} coureurs détectés</div>
+              <div className="text-xs text-emerald-400 uppercase mb-2">✓ {preview.length} coureurs (doublons fusionnés)</div>
               <div className="max-h-52 overflow-y-auto space-y-px text-xs">{preview.map(p=><div key={p.id} className="flex items-center gap-2 py-1"><span className="font-bold text-red-500 w-9">#{p.bib}</span><span className="flex-1 truncate">{p.name}</span><span className="truncate max-w-[90px]" style={{color:clubColor(p.club)}}>{clubShort(p.club)}</span><span>{flag(p.nat)}</span></div>)}</div>
-              <button onClick={()=>onImport(preview)} className="w-full mt-3 py-2 bg-red-600 active:bg-red-500 text-white text-xs uppercase tracking-wider">Importer cette liste</button>
+              <button onClick={()=>onImport(preview)} className="w-full mt-3 py-2 bg-red-600 active:bg-red-500 text-white text-xs uppercase tracking-wider">Importer ce roster</button>
             </div>
           )}
         </div>
