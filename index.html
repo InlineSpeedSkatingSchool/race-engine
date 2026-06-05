@@ -179,6 +179,60 @@ function mergeRosters(batches){
   return Array.from(byBib.values()).sort((a,b)=>a.bib-b.bib).map((s,i)=>({id:i+1,bib:Number(s.bib),name:s.name||`Coureur ${s.bib}`,club:s.club||'',nat:(s.nat||'FRA').toUpperCase(),cat:s.cat||'Senior',status:null}));
 }
 
+// PARSEUR LOCAL GÉNÉRIQUE (sans IA) — FFRS, Europe, World Skate, OCR, copier-coller.
+// Stratégie : colonnes d'abord (tab / 2+ espaces), sinon mode "loose".
+const COUNTRY_NAMES={france:'FRA',espagne:'ESP',spain:'ESP',espana:'ESP',italie:'ITA',italy:'ITA',italia:'ITA',allemagne:'GER',germany:'GER',deutschland:'GER',belgique:'BEL',belgium:'BEL',belgie:'BEL',paysbas:'NED',netherlands:'NED',nederland:'NED',portugal:'POR',suisse:'SUI',switzerland:'SUI',schweiz:'SUI',colombie:'COL',colombia:'COL',bresil:'BRA',brazil:'BRA',brasil:'BRA',coree:'KOR',korea:'KOR',japon:'JPN',japan:'JPN',chine:'CHN',china:'CHN',taiwan:'TPE',taipei:'TPE',usa:'USA',etatsunis:'USA',argentine:'ARG',argentina:'ARG',mexique:'MEX',mexico:'MEX',chili:'CHI',chile:'CHI',equateur:'ECU',ecuador:'ECU',venezuela:'VEN',australie:'AUS',australia:'AUS',pologne:'POL',poland:'POL',danemark:'DEN',denmark:'DEN'};
+const CAT_PREFIX=/\b((SE|JU|VE|CA|MI|BE|PO|DA)[HFG])\b/i;
+const CAT_WORD=/\b(seniors?|sen|juniors?|jun|cadets?|minimes?|espoirs?|veterans?|vet|masters?|youth|u1[0-9]|u2[0-9])\b/i;
+function catNorm(w){w=(w||'').toLowerCase();if(/^(se|sen|senior)/.test(w))return 'Senior';if(/^(ju|jun|junior)/.test(w))return 'Junior';if(/^(ve|vet|master)/.test(w))return 'Veteran';if(/(cadet|minime|youth|^ca|^mi|^be|^po|u1|u2|espoir)/.test(w))return 'Youth';return 'Senior';}
+function parseLocalRoster(text){
+  const NATS=Object.keys(FLAG_MAP);
+  const out=[];
+  text.split(/\r?\n/).forEach(line=>{
+    let raw=(line||'').replace(/\u00a0/g,' ').replace(/\t/g,'  ').trim();
+    if(!raw)return;
+    if(!/\d/.test(raw)&&/\b(dos|lic|nom|pr[eé]nom|club|ligue|ordre|name|bib|team|country|pays|nat|rank|pos|temps|time)\b/i.test(raw))return;
+    const bibM=raw.match(/(?:^|\D)(\d{1,4})(?:\D|$)/);
+    if(!bibM)return;
+    const bib=Number(bibM[1]);
+    let nat='FRA',cat='Senior';
+    const grabNat=(tok)=>{const u=tok.toUpperCase();const fl=tok.toLowerCase().replace(/[^a-z]/g,'');if(NATS.includes(u)){nat=u;return true;}if(COUNTRY_NAMES[fl]){nat=COUNTRY_NAMES[fl];return true;}return false;};
+
+    let fields=raw.split(/ {2,}/).map(f=>f.trim()).filter(Boolean);
+    if(fields.length>=3){
+      // ---- mode COLONNES (exports propres, toutes fédérations) ----
+      let usedBib=false;
+      let fs=fields.filter(f=>{
+        if(!usedBib&&/^\d{1,4}$/.test(f)&&Number(f)===bib){usedBib=true;return false;}
+        if(/^\d{5,}$/.test(f))return false;          // licence
+        if(/^\d{1,3}$/.test(f))return false;         // rang / ordre
+        if(/^\d{2}-\d{2}$/.test(f))return false;     // ligue
+        if(/^\d+[:.]\d/.test(f))return false;        // temps
+        if(f.split(/\s+/).length===1&&grabNat(f))return false; // nationalité seule
+        if(f.split(/\s+/).length===1&&CAT_WORD.test(f)){cat=catNorm(f);return false;}
+        return true;
+      }).map(f=>{const m=f.match(CAT_PREFIX);if(m){cat=catNorm(m[1]);return f.replace(CAT_PREFIX,'').replace(/^[-\s]+/,'').trim();}return f;}).filter(Boolean);
+      let name='',club='';
+      if(fs.length===0){name=`Coureur ${bib}`;}
+      else if(fs.length===1){name=fs[0];}
+      else if(fs.length===2){name=fs[0];club=fs[1];}
+      else{let li=0,lmax=0;fs.forEach((f,i)=>{if(f.length>lmax){lmax=f.length;li=i;}});club=fs[li];name=fs.filter((_,i)=>i!==li).join(' ');}
+      out.push({bib,name:name||`Coureur ${bib}`,club:club.trim(),nat,cat});
+    }else{
+      // ---- mode LOOSE (OCR sale, espaces simples) ----
+      let rest=raw.replace(bibM[0],' ').replace(/\b\d{5,}\b/g,' ').replace(/\b\d{2}-\d{2}\b/g,' ').replace(/\b\d+[:.]\d+\b/g,' ').replace(/\s{2,}/g,' ').trim();
+      const nt=rest.match(/\b[A-Z]{3}\b/g);if(nt){const f=nt.find(t=>NATS.includes(t));if(f){nat=f;rest=rest.replace(new RegExp('\\b'+f+'\\b'),' ').trim();}}
+      const lc=rest.toLowerCase();Object.keys(COUNTRY_NAMES).forEach(cn=>{if(lc.includes(cn)){nat=COUNTRY_NAMES[cn];const re=new RegExp(cn,'i');rest=rest.replace(re,' ');}});
+      let name='',club='';
+      const cm=rest.match(CAT_PREFIX);
+      if(cm){cat=catNorm(cm[1]);name=rest.slice(0,cm.index).trim();club=rest.slice(cm.index+cm[1].length).replace(/^[-\s]+/,'').trim();}
+      else{const cw=rest.match(CAT_WORD);if(cw){cat=catNorm(cw[0]);rest=rest.replace(CAT_WORD,' ');}rest=rest.replace(/\s+\d{1,3}\s*$/,'').replace(/\s{2,}/g,' ').trim();const toks=rest.split(/\s+/).filter(Boolean);if(toks.length<=2)name=toks.join(' ');else{name=toks.slice(0,2).join(' ');club=toks.slice(2).join(' ');}}
+      out.push({bib,name:name||`Coureur ${bib}`,club:club.replace(/\s{2,}/g,' ').trim(),nat,cat});
+    }
+  });
+  return out;
+}
+
 // ============================================================
 // REGISTRE DE MODULES (épreuves)
 // Chaque module = même base coureurs/rôles, moteur propre.
@@ -288,6 +342,8 @@ function App(){
   const selectRace=(id)=>{setActiveRaceId(id);setActiveSprintIdx(0);setLastSprintId(null);};
   const renameRace=(id,label)=>patchEvent(e=>({...e,races:e.races.map(r=>r.id===id?{...r,label}:r)}));
   const deleteRace=(id)=>patchEvent(e=>({...e,races:e.races.length>1?e.races.filter(r=>r.id!==id):e.races}));
+  const duplicateRace=(id)=>patchEvent(e=>{const r=e.races.find(x=>x.id===id);if(!r)return e;const copy={...r,id:rid(),label:r.label+' (copie)',live:{sprintResults:[...(r.live?.sprintResults||[])],lapChanges:{...(r.live?.lapChanges||{})}}};return {...e,races:[...e.races,copy]};});
+  const duplicateEvent=(id)=>setEvents(prev=>{const e=prev.find(x=>x.id===id);if(!e)return prev;const copy=JSON.parse(JSON.stringify(e));copy.id=rid();copy.name=e.name+' (copie)';copy.races=copy.races.map(r=>({...r,id:rid()}));return [copy,...prev];});
 
   const structure=useMemo(()=>mod.id==='points'?buildRaceConfig(config):{sprints:[]},[mod.id,config]);
   const ranking=useMemo(()=>computeRanking(skaters,sprintResults,lapChanges),[skaters,sprintResults,lapChanges]);
@@ -314,7 +370,7 @@ function App(){
       </header>
 
       <main className="flex-1 overflow-y-auto">
-        {tab==='event' && <EventScreen {...{event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent}} />}
+        {tab==='event' && <EventScreen {...{event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,duplicateRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent,duplicateEvent}} />}
         {tab==='coureurs' && <CoureursScreen {...{skaters,roles,assignRole,assignRoleClub,setShowImport,roleCounts}} />}
         {tab==='saisie' && (mod.operational
           ? <PointsInput {...{structure,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById,rankById}} />
@@ -383,10 +439,11 @@ function ModuleSoon({mod}){
 // ============================================================
 // ÉCRAN COURSE (réglages + sauvegarde + historique)
 // ============================================================
-function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent}){
+function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,duplicateRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent,duplicateEvent}){
   const upd=(k,v)=>updateEventMeta({[k]:v});
   return (
     <div className="p-4 space-y-5">
+      <div className="text-[10px] text-emerald-500 flex items-center gap-1"><span>✓</span> Tout est sauvegardé automatiquement sur cet appareil — événements, courses, rôles, points.</div>
       <Block title="Événement">
         <Field label="Nom de l'événement"><input value={event.name} onChange={e=>upd('name',e.target.value)} placeholder="ex : Championnats d'Europe 2026" className="w-full bg-black border border-zinc-700 px-3 py-2 text-base outline-none focus:border-red-500" /></Field>
         <div className="grid grid-cols-2 gap-2">
@@ -397,7 +454,7 @@ function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRa
 
       <Block title={`Courses de l'événement · ${event.races.length}`}>
         <div className="space-y-1">
-          {event.races.map(r=><RaceRow key={r.id} r={r} active={r.id===race.id} onSelect={()=>selectRace(r.id)} onRename={(l)=>renameRace(r.id,l)} onDelete={()=>{if(event.races.length>1&&confirm('Supprimer cette course ?'))deleteRace(r.id);}} canDelete={event.races.length>1} />)}
+          {event.races.map(r=><RaceRow key={r.id} r={r} active={r.id===race.id} onSelect={()=>selectRace(r.id)} onRename={(l)=>renameRace(r.id,l)} onDuplicate={()=>duplicateRace(r.id)} onDelete={()=>{if(event.races.length>1&&confirm('Supprimer cette course ?'))deleteRace(r.id);}} canDelete={event.races.length>1} />)}
         </div>
         <div className="text-[10px] text-zinc-500 uppercase tracking-wider mt-2 mb-1">Ajouter une course</div>
         <div className="grid grid-cols-2 gap-1">
@@ -427,15 +484,15 @@ function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRa
         </Block>
       )}
 
-      <Block title={`Tous les événements · ${events.length}`}>
+      <Block title={`Historique · ${events.length} événement${events.length>1?'s':''}`}>
         <div className="space-y-1">
           {events.map(ev=>(
             <div key={ev.id} className={`flex items-center gap-2 p-2 border ${ev.id===event.id?'border-red-600':'border-zinc-800'}`}>
               <button onClick={()=>selectEvent(ev.id)} className="flex-1 min-w-0 text-left">
-                <div className="text-sm truncate">{ev.name}</div>
+                <div className="text-sm truncate">{ev.name} {ev.id===event.id&&<span className="text-[9px] text-red-500 uppercase">· actif</span>}</div>
                 <div className="text-[10px] text-zinc-500">{ev.date} · {ev.location||'—'} · {ev.races.length} course{ev.races.length>1?'s':''} · {ev.roster.length} coureurs</div>
               </button>
-              {ev.id===event.id?<span className="text-[10px] text-red-500 uppercase">actif</span>:null}
+              <button onClick={()=>duplicateEvent(ev.id)} title="Dupliquer" className="px-2 py-1 border border-zinc-700 text-zinc-400 text-xs">⧉</button>
               <button onClick={()=>{if(confirm('Supprimer cet événement et ses courses ?'))deleteEvent(ev.id);}} className="px-2 py-1 border border-zinc-800 text-zinc-600 text-xs">🗑</button>
             </div>
           ))}
@@ -447,23 +504,24 @@ function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRa
   );
 }
 
-function RaceRow({r,active,onSelect,onRename,onDelete,canDelete}){
+function RaceRow({r,active,onSelect,onRename,onDuplicate,onDelete,canDelete}){
   const [edit,setEdit]=useState(false);
   const [val,setVal]=useState(r.label);
   const m=MODULES.find(x=>x.id===r.module)||{};
   return (
-    <div className={`flex items-center gap-2 p-2 border ${active?'border-red-600 bg-red-950/20':'border-zinc-800'}`}>
+    <div className={`flex items-center gap-1.5 p-2 border ${active?'border-red-600 bg-red-950/20':'border-zinc-800'}`}>
       <span className="shrink-0">{m.icon}</span>
       {edit?(
         <input autoFocus value={val} onChange={e=>setVal(e.target.value)} onBlur={()=>{onRename(val||r.label);setEdit(false);}} className="flex-1 bg-black border border-zinc-700 px-2 py-1 text-sm outline-none focus:border-red-500" />
       ):(
         <button onClick={onSelect} className="flex-1 min-w-0 text-left">
           <div className="text-sm truncate">{r.label}</div>
-          <div className="text-[10px] text-zinc-500">{m.label}{!m.operational&&' · à venir'}{active?' · active':''}</div>
+          <div className="text-[10px] text-zinc-500">{m.label}{!m.operational&&' · à venir'}{active?' · active':' · charger'}</div>
         </button>
       )}
-      <button onClick={()=>setEdit(e=>!e)} className="px-2 py-1 border border-zinc-700 text-zinc-400 text-xs">✏️</button>
-      {canDelete && <button onClick={onDelete} className="px-2 py-1 border border-zinc-800 text-zinc-600 text-xs">🗑</button>}
+      <button onClick={()=>setEdit(e=>!e)} title="Renommer" className="px-1.5 py-1 border border-zinc-700 text-zinc-400 text-xs">✏️</button>
+      <button onClick={onDuplicate} title="Dupliquer" className="px-1.5 py-1 border border-zinc-700 text-zinc-400 text-xs">⧉</button>
+      {canDelete && <button onClick={onDelete} title="Supprimer" className="px-1.5 py-1 border border-zinc-800 text-zinc-600 text-xs">🗑</button>}
     </div>
   );
 }
@@ -722,20 +780,24 @@ function ImportModal({onClose,onImport}){
     else{setPreview(merged);if(errs.length)setError(`${errs.length} fichier(s) en erreur — le reste a été fusionné.`);}
     setLoading(false);
   };
-  const doText=async()=>{if(!text.trim())return;setLoading(true);setError(null);setPreview(null);try{const list=await importViaApi({text});const merged=mergeRosters([list]);merged.length?setPreview(merged):setError('Aucun coureur détecté.');}catch(err){setError(err.message);}finally{setLoading(false);}};
+  const doText=()=>{if(!text.trim())return;setError(null);setPreview(null);try{const list=parseLocalRoster(text);const merged=mergeRosters([list]);merged.length?setPreview(merged):setError('Aucun coureur reconnu. Vérifie que chaque ligne commence par un dossard.');}catch(err){setError(err.message);}};
 
   return (
     <div className="fixed inset-0 bg-black/85 z-50 flex items-end sm:items-center justify-center">
       <div className="bg-zinc-950 border border-zinc-700 w-full sm:max-w-lg max-h-[90vh] overflow-y-auto safe-bottom">
         <div className="border-b border-zinc-800 px-4 py-3 flex justify-between items-center sticky top-0 bg-zinc-950"><h2 className="text-sm font-bold uppercase tracking-wider">Import starting list</h2><button onClick={onClose} className="text-zinc-500 active:text-red-500 text-xl px-2">✕</button></div>
         <div className="p-4">
-          <div className="flex gap-1 mb-4">{[['photo','📷 Photos / PDF'],['paste','📋 Texte'],['manual','✎ Manuel']].map(([id,lbl])=><button key={id} onClick={()=>{setTab(id);setPreview(null);setError(null);}} className={`flex-1 py-2 text-xs uppercase border ${tab===id?'border-red-500 text-red-400':'border-zinc-800 text-zinc-500'}`}>{lbl}</button>)}</div>
+          <div className="flex gap-1 mb-4">{[['photo','📷 Photos / PDF (IA)'],['paste','📋 Texte (gratuit)'],['manual','✎ Manuel']].map(([id,lbl])=><button key={id} onClick={()=>{setTab(id);setPreview(null);setError(null);}} className={`flex-1 py-2 text-[11px] uppercase border ${tab===id?'border-red-500 text-red-400':'border-zinc-800 text-zinc-500'}`}>{lbl}</button>)}</div>
           {tab==='photo'&&<div>
-            <p className="text-xs text-zinc-400 mb-3">Sélectionne <span className="text-zinc-200">une ou plusieurs</span> photos / captures / PDF. Tout est fusionné en une seule liste et les doublons (même dossard) sont supprimés.</p>
+            <p className="text-xs text-zinc-400 mb-3">Sélectionne <span className="text-zinc-200">une ou plusieurs</span> photos / captures / PDF. Tout est fusionné en une seule liste, doublons (même dossard) supprimés. <span className="text-zinc-500">(via IA Anthropic — nécessite la clé API)</span></p>
             <input type="file" accept="image/*,application/pdf" multiple onChange={doFiles} disabled={loading} className="block w-full text-xs text-zinc-400 file:mr-3 file:py-2 file:px-4 file:border-0 file:bg-red-600 file:text-white file:text-xs file:uppercase" />
             <p className="text-[10px] text-zinc-600 mt-2">Astuce : sélectionne les 3 captures (401-420, 421-440, 441-460) d'un coup → un seul roster.</p>
           </div>}
-          {tab==='paste'&&<div><p className="text-xs text-zinc-400 mb-3">Colle la liste (site, PDF, email…).</p><textarea value={text} onChange={e=>setText(e.target.value)} rows={6} placeholder={"464 BEDDIAF Nolan MANAO\n449 ROCHER Matthis MANAO"} className="w-full bg-black border border-zinc-700 p-3 text-xs outline-none focus:border-red-500" /><button onClick={doText} disabled={loading||!text.trim()} className="mt-2 w-full py-2 bg-red-600 active:bg-red-500 disabled:opacity-40 text-white text-xs uppercase tracking-wider">Analyser</button></div>}
+          {tab==='paste'&&<div>
+            <p className="text-xs text-zinc-400 mb-2">Solution <span className="text-emerald-400">gratuite, sans clé API</span>. Sur iPhone : appui long sur ta capture → « Copier le texte » (Live Text) → colle ici → l'app structure le roster localement.</p>
+            <textarea value={text} onChange={e=>setText(e.target.value)} rows={6} placeholder={"464 BEDDIAF Nolan SEH-MANAO\n449 ROCHER Matthis SEH-MANAO\n446 COLIN Louis SEH-ROLLER SPORTS SAINT-PIERRAIS"} className="w-full bg-black border border-zinc-700 p-3 text-xs outline-none focus:border-red-500" />
+            <button onClick={doText} disabled={!text.trim()} className="mt-2 w-full py-2 bg-red-600 active:bg-red-500 disabled:opacity-40 text-white text-xs uppercase tracking-wider">Structurer le texte (local)</button>
+          </div>}
           {tab==='manual'&&<ManualEntry onSave={onImport} />}
           {loading&&<div className="mt-3 text-xs text-amber-400">{progress||'Analyse en cours…'}</div>}
           {error&&<div className="mt-3 text-xs text-amber-400 border border-amber-900 bg-amber-950/30 p-2">⚠ {error}</div>}
