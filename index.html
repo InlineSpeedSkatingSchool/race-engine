@@ -178,6 +178,36 @@ function downloadJSON(filename,obj){
     setTimeout(()=>URL.revokeObjectURL(url),1500);
   }catch(e){alert('Export impossible: '+e.message);}
 }
+// Mémoire canonique : convertit le live (points/tours/statuts) en log d'événements typés.
+function buildEventLog(roster, race){
+  const st=buildRaceConfig(race.config||defaultPointsConfig());
+  const spById={};st.sprints.forEach(sp=>spById[sp.id]=sp);
+  const byId={};roster.forEach(s=>byId[s.id]=s);
+  const k=(id)=>byId[id]?nameKey(byId[id]):null;
+  const log=[];let seq=1;
+  [...(race.live?.sprintResults||[])].sort((a,b)=>a.sprintId-b.sprintId).forEach(sp=>{
+    const meta=spById[sp.sprintId]||{};const isFinal=!!meta.isFinal;
+    log.push({id:`pt-${sp.sprintId}`,seq:seq++,type:isFinal?'ARRIVEE':'POINT',source:'live',videoTime:null,
+      point:meta.label||String(sp.sprintId),
+      positions:sp.positions.map((id,idx)=>({rank:idx+1,athleteKey:k(id),bib:(byId[id]||{}).bib,name:(byId[id]||{}).name,pts:pointsForPosition(idx+1,isFinal)}))});
+  });
+  Object.entries(race.live?.lapChanges||{}).forEach(([id,v])=>{if(!v)return;const s=byId[id];if(!s)return;log.push({id:`lap-${id}`,seq:seq++,type:v>0?'LAP_GAIN':'LAP_LOSS',source:'live',videoTime:null,athleteKey:nameKey(s),bib:s.bib,name:s.name,value:v});});
+  roster.forEach(s=>{if(s.status){log.push({id:`st-${s.id}`,seq:seq++,type:s.status,source:'live',videoTime:null,athleteKey:nameKey(s),bib:s.bib,name:s.name});}});
+  // événements tactiques déjà présents (séquenceur futur) : on les conserve
+  (race.log||[]).filter(e=>e.source&&e.source!=='live').forEach(e=>log.push({...e,seq:seq++}));
+  return log;
+}
+// Base athlètes dérivée (union des rosters par clé nom).
+function buildAthleteBase(events){
+  const base={};
+  events.forEach(ev=>(ev.roster||[]).forEach(s=>{
+    const key=nameKey(s);if(!key)return;
+    if(!base[key])base[key]={key,name:s.name,nat:s.nat||'FRA',clubs:[]};
+    base[key].nat=s.nat||base[key].nat;
+    if(s.club&&!base[key].clubs.includes(s.club))base[key].clubs.push(s.club);
+  }));
+  return base;
+}
 async function importViaApi({imageData,mediaType,pdfData,text}){
   const res=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageData,mediaType,pdfData,text})});
   let data; try{data=await res.json();}catch{throw new Error("Import : nécessite la fonction serveur (étape 2). La saisie manuelle marche.");}
@@ -281,7 +311,14 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v12';
+const APP_VERSION='v13';
+const SCHEMA_VERSION=1;
+// Taxonomie des événements (figée — voir ARCHITECTURE-DONNEES.md). Extensible sans rupture.
+const EVENT_TYPES={
+  auto:['POINT','ARRIVEE','LAP_GAIN','LAP_LOSS','DNF','DSQ','PENALTY'],
+  tactical:['SPRINT','ATTAQUE','CONTRE','ECHAPPEE','RETOUR','PLACEMENT','RELAIS','BLOC','CHUTE','EFFORT_FAIBLE','EFFORT_MOYEN','EFFORT_FORT','NOTE']
+};
+const EVENT_GROUPS=['tete','echappee','contre','peloton','chasse','queue','decroche'];
 
 // ----- Événements & courses : factories + migration -----
 const rid=()=>Math.random().toString(36).slice(2,9);
@@ -385,15 +422,12 @@ function App(){
 
   // EXPORT / IMPORT JSON — la base de données du projet
   const exportAll=()=>{
-    const payload={app:'RaceEngine',version:APP_VERSION,exportedAt:new Date().toISOString(),
+    const payload={app:'RaceEngine',schema:SCHEMA_VERSION,version:APP_VERSION,exportedAt:new Date().toISOString(),
+      athletes:buildAthleteBase(events),
       events:events.map(ev=>({...ev,races:ev.races.map(r=>{
         if(r.module==='points'){
-          const st=buildRaceConfig(r.config||defaultPointsConfig());
-          const spById={};st.sprints.forEach(sp=>spById[sp.id]=sp);
-          const nameById={};ev.roster.forEach(s=>nameById[s.id]={bib:s.bib,name:s.name,club:s.club,nat:s.nat});
           const rk=computeRanking(ev.roster,r.live?.sprintResults||[],r.live?.lapChanges||{});
-          const timeline=[...(r.live?.sprintResults||[])].sort((a,b)=>a.sprintId-b.sprintId).map(sp=>{const f=!!(spById[sp.id]||{}).isFinal;return {point:(spById[sp.id]||{}).label||String(sp.sprintId),isFinal:f,scorers:sp.positions.map((id,idx)=>({pos:idx+1,bib:(nameById[id]||{}).bib,name:(nameById[id]||{}).name,pts:pointsForPosition(idx+1,f)}))};});
-          return {...r,result:rk.map(x=>({rank:x.rank,bib:x.bib,name:x.name,club:x.club,nat:x.nat,cat:x.cat,points:x.points,laps:x.laps,status:x.status||null})),timeline};
+          return {...r,video:r.video||null,log:buildEventLog(ev.roster,r),result:rk.map(x=>({rank:x.rank,bib:x.bib,name:x.name,club:x.club,nat:x.nat,cat:x.cat,points:x.points,laps:x.laps,status:x.status||null}))};
         }
         return r;
       })}))};
@@ -407,7 +441,7 @@ function App(){
       id:e.id||rid(),name:e.name||'Événement',date:e.date||today(),location:e.location||'',
       roster:Array.isArray(e.roster)?e.roster.map((s,i)=>({id:s.id||i+1,bib:Number(s.bib)||0,name:s.name||`Coureur ${s.bib||i+1}`,club:s.club||'',nat:(s.nat||'FRA').toUpperCase(),cat:s.cat||'Senior',status:s.status||null})):[],
       roles:e.roles&&typeof e.roles==='object'?e.roles:{},
-      races:(Array.isArray(e.races)&&e.races.length?e.races:[makeRace('points')]).map(r=>({id:r.id||rid(),module:r.module||'points',label:r.label||'Course',config:r.config||defaultPointsConfig(),live:{sprintResults:Array.isArray(r.live?.sprintResults)?r.live.sprintResults:[],lapChanges:r.live?.lapChanges||{}}}))
+      races:(Array.isArray(e.races)&&e.races.length?e.races:[makeRace('points')]).map(r=>({id:r.id||rid(),module:r.module||'points',label:r.label||'Course',config:r.config||defaultPointsConfig(),live:{sprintResults:Array.isArray(r.live?.sprintResults)?r.live.sprintResults:[],lapChanges:r.live?.lapChanges||{}},log:Array.isArray(r.log)?r.log:[],video:r.video||null}))
     }));
     setEvents(evs);setActiveEventId(evs[0].id);setActiveRaceId(evs[0].races[0].id);setActiveSprintIdx(0);setLastSprintId(null);
     showToast(`${evs.length} événement(s) importé(s)`,'gain');
@@ -792,7 +826,7 @@ function buildReport(skaters, sprintResults, structure){
   const cum={};skaters.forEach(s=>cum[s.id]=0);
   const leaderCount={};const series=[];const rankSeries={};skaters.forEach(s=>rankSeries[s.id]=[]);
   ordered.forEach(sp=>{
-    const meta=spById[sp.id]||{};const isFinal=!!meta.isFinal;
+    const meta=spById[sp.sprintId]||{};const isFinal=!!meta.isFinal;
     const scorers=sp.positions.map((id,idx)=>({id,pos:idx+1,pts:pointsForPosition(idx+1,isFinal)}));
     scorers.forEach(sc=>{cum[sc.id]+=sc.pts;});
     let leaderId=null,best=-1;skaters.forEach(s=>{if(cum[s.id]>best){best=cum[s.id];leaderId=s.id;}});
