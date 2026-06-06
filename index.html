@@ -311,7 +311,7 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v14';
+const APP_VERSION='v15';
 const SCHEMA_VERSION=1;
 // Taxonomie des événements (figée — voir ARCHITECTURE-DONNEES.md). Extensible sans rupture.
 const EVENT_TYPES={
@@ -829,34 +829,23 @@ function PointsTimeline({skaters,sprintResults,structure,roles,ranking}){
   const top3=ranking.filter(r=>!r.statusVoid).slice(0,3);
   const coached=ranking.filter(r=>getRole(roles,r)==='mine');
   const seen={},rows=[];[...top3,...coached].forEach(r=>{if(!seen[r.id]){seen[r.id]=1;rows.push(r);}});
-  if(!sprintResults.length)return <div className="text-sm text-zinc-500 text-center py-8">Aucun point saisi. La timeline se construit au fil de la course.</div>;
-  const dotColor=(p)=>p===3?'#ef4444':p===2?'#f59e0b':p===1?'#38bdf8':null;
+  if(!sprintResults.length)return <div className="text-sm text-zinc-500 text-center py-8">Aucun point saisi. Le tableau se construit au fil de la course.</div>;
   const gridCols=`repeat(${cols.length}, 1fr)`;
-  const wide=cols.length>14;
   return (
-    <div>
-      <div className="text-[10px] text-zinc-500 mb-2 flex items-center gap-3">
-        <span className="flex items-center gap-1"><i style={{width:9,height:9,borderRadius:'50%',background:'#ef4444',display:'inline-block'}}></i>3</span>
-        <span className="flex items-center gap-1"><i style={{width:9,height:9,borderRadius:'50%',background:'#f59e0b',display:'inline-block'}}></i>2</span>
-        <span className="flex items-center gap-1"><i style={{width:9,height:9,borderRadius:'50%',background:'#38bdf8',display:'inline-block'}}></i>1</span>
-        <span className="text-zinc-600">pt</span>
+    <div style={{fontFamily:'ui-monospace, monospace'}}>
+      {/* en-tête des points */}
+      <div className="grid mb-1 border-b border-zinc-800 pb-1" style={{gridTemplateColumns:gridCols}}>
+        {cols.map(c=><div key={c.id} className={`text-center leading-none ${c.isFinal?'text-red-500 font-bold text-[8px]':'text-zinc-500 text-[8px]'}`}>{c.isFinal?'AR':c.label}</div>)}
       </div>
-      <div className="overflow-x-auto -mx-1 px-1">
-        <div style={wide?{minWidth:`${cols.length*18}px`}:{}}>
-          <div className="grid mb-1" style={{gridTemplateColumns:gridCols}}>
-            {cols.map(c=><div key={c.id} className="text-[7px] text-zinc-500 text-center leading-none">{c.isFinal?'ARR':c.label}</div>)}
+      {rows.map(r=>(
+        <div key={r.id} className="mb-2">
+          <div className="text-[11px] flex items-center gap-1 truncate">{getRole(roles,r)&&<span>{ROLE_ICON[getRole(roles,r)]}</span>}<span className="font-bold text-red-500">{r.bib}</span><span className="truncate">{r.name}</span><span className="text-zinc-500 shrink-0">· {r.points} pts</span></div>
+          <div className="grid items-center" style={{gridTemplateColumns:gridCols}}>
+            {cols.map(c=>{const p=(ptsMap[r.id]||{})[c.id];return <div key={c.id} className={`text-center text-[11px] leading-tight ${p?(c.isFinal?'text-red-400 font-bold':'text-zinc-100 font-bold'):'text-zinc-700'}`}>{p||'·'}</div>;})}
           </div>
-          {rows.map(r=>(
-            <div key={r.id} className="mb-1.5">
-              <div className="text-[10px] flex items-center gap-1 truncate mb-0.5">{getRole(roles,r)&&<span>{ROLE_ICON[getRole(roles,r)]}</span>}<span className="font-bold text-red-500">{r.bib}</span><span className="truncate">{r.name}</span><span className="text-zinc-600 shrink-0">· {r.points} pts</span></div>
-              <div className="grid items-center" style={{gridTemplateColumns:gridCols}}>
-                {cols.map(c=>{const p=(ptsMap[r.id]||{})[c.id];const col=dotColor(p);return <div key={c.id} className="flex justify-center py-0.5">{col?<div style={{width:11,height:11,borderRadius:'50%',background:col}}></div>:<div style={{width:5,height:1,background:'#27272a'}}></div>}</div>;})}
-              </div>
-            </div>
-          ))}
         </div>
-      </div>
-      <div className="text-[9px] text-zinc-600 mt-1">Lignes : top 3 + tes coureurs ⭐ · colonnes : points 20→1 + arrivée.</div>
+      ))}
+      <div className="text-[9px] text-zinc-600 mt-1">Top 3 + tes coureurs ⭐ · colonnes 20→1 + AR (arrivée) · valeur = points pris.</div>
     </div>
   );
 }
@@ -866,7 +855,7 @@ function RaceReport({skaters,sprintResults,structure,roles,ranking}){
   return (
     <div className="space-y-4">
       <div>
-        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Timeline des prises de points</div>
+        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Tableau des prises de points</div>
         <PointsTimeline skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} ranking={ranking} />
       </div>
       <div>
@@ -886,7 +875,7 @@ function PointsBoard({ranking,teamRanking,roles,pointsInfo,skaters,sprintResults
       <div className="grid grid-cols-3 gap-1 mb-2">
         <button onClick={()=>setView('indiv')} className={`py-2 text-xs uppercase tracking-wider border ${view==='indiv'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>Individuel</button>
         <button onClick={()=>setView('team')} className={`py-2 text-xs uppercase tracking-wider border ${view==='team'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>Équipes</button>
-        <button onClick={()=>setView('report')} className={`py-2 text-xs uppercase tracking-wider border ${view==='report'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>📊 Rapport</button>
+        <button onClick={()=>setView('report')} className={`py-2 text-xs uppercase tracking-wider border ${view==='report'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>📋 Débrief</button>
       </div>
       {view==='report' && <RaceReport skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} ranking={ranking} />}
       {view!=='report' && (<>
