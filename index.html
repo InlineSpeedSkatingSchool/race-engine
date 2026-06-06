@@ -311,7 +311,7 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v13';
+const APP_VERSION='v14';
 const SCHEMA_VERSION=1;
 // Taxonomie des événements (figée — voir ARCHITECTURE-DONNEES.md). Extensible sans rupture.
 const EVENT_TYPES={
@@ -549,9 +549,9 @@ function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRa
       <div className="text-[10px] text-emerald-500 flex items-center gap-1"><span>✓</span> Sauvegardé automatiquement sur cet appareil · <span className="text-zinc-500">{APP_VERSION}</span></div>
 
       <Block title="Événement">
-        <Field label="Nom de l'événement"><input value={event.name} onChange={e=>upd('name',e.target.value)} placeholder="ex : Championnats d'Europe 2026" className="w-full bg-black border border-zinc-700 px-3 py-3 text-lg outline-none focus:border-red-500" /></Field>
-        <Field label="📍 Lieu"><input value={event.location||''} onChange={e=>upd('location',e.target.value)} placeholder="ex : Geisingen" className="w-full bg-black border border-zinc-700 px-3 py-3 text-base outline-none focus:border-red-500" /></Field>
-        <Field label="📅 Date"><input type="date" value={event.date} onChange={e=>upd('date',e.target.value)} className="w-full bg-black border border-zinc-700 px-3 py-3 text-base outline-none focus:border-red-500" /></Field>
+        <Field label="Nom de l'événement"><input value={event.name} onChange={e=>upd('name',e.target.value)} placeholder="ex : Championnats d'Europe 2026" className="w-full bg-black border border-zinc-700 px-3 py-3 text-base outline-none focus:border-red-500" style={{height:'48px'}} /></Field>
+        <Field label="📍 Lieu"><input value={event.location||''} onChange={e=>upd('location',e.target.value)} placeholder="ex : Geisingen" className="w-full bg-black border border-zinc-700 px-3 py-3 text-base outline-none focus:border-red-500" style={{height:'48px'}} /></Field>
+        <Field label="📅 Date"><input type="date" value={event.date} onChange={e=>upd('date',e.target.value)} className="w-full bg-black border border-zinc-700 px-3 py-3 text-base outline-none focus:border-red-500" style={{height:'48px',WebkitAppearance:'none',appearance:'none',textAlign:'left'}} /></Field>
       </Block>
 
       <Block title="Transfert / Archivage des données">
@@ -818,82 +818,56 @@ function FastSprintInput({sprint,skaters,roles,pointsById,rankById,existing,onCh
 // MODULE POINTS — Classement
 // ============================================================
 // ============================================================
-// RAPPORT DE COURSE — analyse à partir de la chronologie
 // ============================================================
-function buildReport(skaters, sprintResults, structure){
-  const spById={};structure.sprints.forEach(sp=>spById[sp.id]=sp);
-  const ordered=[...sprintResults].sort((a,b)=>a.sprintId-b.sprintId);
-  const cum={};skaters.forEach(s=>cum[s.id]=0);
-  const leaderCount={};const series=[];const rankSeries={};skaters.forEach(s=>rankSeries[s.id]=[]);
-  ordered.forEach(sp=>{
-    const meta=spById[sp.sprintId]||{};const isFinal=!!meta.isFinal;
-    const scorers=sp.positions.map((id,idx)=>({id,pos:idx+1,pts:pointsForPosition(idx+1,isFinal)}));
-    scorers.forEach(sc=>{cum[sc.id]+=sc.pts;});
-    let leaderId=null,best=-1;skaters.forEach(s=>{if(cum[s.id]>best){best=cum[s.id];leaderId=s.id;}});
-    if(best>0)leaderCount[leaderId]=(leaderCount[leaderId]||0)+1;
-    const order=skaters.map(s=>({id:s.id,p:cum[s.id]})).sort((a,b)=>b.p-a.p);
-    order.forEach((o,i)=>rankSeries[o.id].push(i+1));
-    series.push({label:meta.label||String(sp.sprintId),isFinal,scorers,cum:{...cum},leaderId:best>0?leaderId:null});
-  });
-  const byId=(id)=>skaters.find(s=>s.id===id)||{name:'?',bib:'?'};
-  const finalRankList=skaters.map(s=>({...s,points:cum[s.id]})).sort((a,b)=>b.points-a.points||a.bib-b.bib).map((s,i)=>({...s,rank:i+1}));
-  const n=series.length;
-  const lateStart=Math.floor(n*2/3),earlyEnd=Math.ceil(n/3);
-  const latePts={},earlyPts={},scoredCount={};
-  series.forEach((pt,i)=>pt.scorers.forEach(sc=>{scoredCount[sc.id]=(scoredCount[sc.id]||0)+1;if(i>=lateStart)latePts[sc.id]=(latePts[sc.id]||0)+sc.pts;if(i<earlyEnd)earlyPts[sc.id]=(earlyPts[sc.id]||0)+sc.pts;}));
-  const top=(obj,key)=>{let b=null;Object.entries(obj).forEach(([id,v])=>{if(!b||v>b.v)b={id:Number(id),v};});return b?{...byId(b.id),[key]:b.v}:null;};
-  let topLeader=null;Object.entries(leaderCount).forEach(([id,v])=>{if(!topLeader||v>topLeader.n)topLeader={id:Number(id),n:v};});
-  let comeback=null;finalRankList.forEach(fr=>{const rs=rankSeries[fr.id];if(!rs||!rs.length||fr.points===0)return;const worst=Math.max(...rs);const gain=worst-fr.rank;if(gain>0&&(!comeback||gain>comeback.gain))comeback={id:fr.id,gain,from:worst,to:fr.rank};});
-  return {series,finalRankList,n,
-    topLeader:topLeader&&{...byId(topLeader.id),n:topLeader.n},
-    finisher:top(latePts,'p'),early:top(earlyPts,'p'),regular:top(scoredCount,'c'),
-    comeback:comeback&&{...byId(comeback.id),gain:comeback.gain,from:comeback.from,to:comeback.to}};
-}
-
-function CumulativeChart({series,skaters,highlightIds}){
-  if(!series.length)return <div className="text-xs text-zinc-600 py-4 text-center">Pas encore de points saisis.</div>;
-  const W=320,H=170,pad=22;
-  const maxPts=Math.max(1,...series.map(pt=>Math.max(...skaters.map(s=>pt.cum[s.id]||0))));
-  const n=series.length;
-  const x=(i)=>pad+(n<=1?0:(i*(W-pad-6)/(n-1)));
-  const y=(p)=>H-pad-(p/maxPts)*(H-pad-10);
-  const finalCum=series[series.length-1].cum;
-  const show=skaters.slice().sort((a,b)=>(finalCum[b.id]||0)-(finalCum[a.id]||0)).filter(s=>(finalCum[s.id]||0)>0).slice(0,6);
+// TIMELINE DES PRISES DE POINTS — lecture tactique immédiate
+// 🔴 3 pts · 🟡 2 pts · 🔵 1 pt (arrivée 3-2-1)
+// ============================================================
+function PointsTimeline({skaters,sprintResults,structure,roles,ranking}){
+  const cols=structure.sprints;
+  const ptsMap={};
+  sprintResults.forEach(sp=>{const f=!!sp.isFinal;sp.positions.forEach((id,idx)=>{(ptsMap[id]=ptsMap[id]||{})[sp.sprintId]=pointsForPosition(idx+1,f);});});
+  const top3=ranking.filter(r=>!r.statusVoid).slice(0,3);
+  const coached=ranking.filter(r=>getRole(roles,r)==='mine');
+  const seen={},rows=[];[...top3,...coached].forEach(r=>{if(!seen[r.id]){seen[r.id]=1;rows.push(r);}});
+  if(!sprintResults.length)return <div className="text-sm text-zinc-500 text-center py-8">Aucun point saisi. La timeline se construit au fil de la course.</div>;
+  const dotColor=(p)=>p===3?'#ef4444':p===2?'#f59e0b':p===1?'#38bdf8':null;
+  const gridCols=`repeat(${cols.length}, 1fr)`;
+  const wide=cols.length>14;
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{background:'#000'}}>
-      {[0,Math.round(maxPts/2),maxPts].map((g,i)=>(<g key={i}><line x1={pad} y1={y(g)} x2={W-6} y2={y(g)} stroke="#27272a" strokeWidth="0.5"/><text x={2} y={y(g)+3} fill="#52525b" fontSize="7">{g}</text></g>))}
-      {show.map((s)=>{
-        const hl=highlightIds&&highlightIds.includes(s.id);
-        let d='';series.forEach((pt,i)=>{d+=(i===0?'M':'L')+x(i)+' '+y(pt.cum[s.id]||0)+' ';});
-        const last=series[series.length-1].cum[s.id]||0;
-        return (<g key={s.id}><path d={d} fill="none" stroke={hl?clubColor(s.club):'#52525b'} strokeWidth={hl?2:1} opacity={hl?1:0.55}/><text x={W-4} y={y(last)+3} fill={hl?clubColor(s.club):'#71717a'} fontSize="7" textAnchor="end">{s.bib}</text></g>);
-      })}
-      <text x={pad} y={H-4} fill="#52525b" fontSize="7">{series[0].label}</text>
-      <text x={W-6} y={H-4} fill="#52525b" fontSize="7" textAnchor="end">{series[series.length-1].label}</text>
-    </svg>
+    <div>
+      <div className="text-[10px] text-zinc-500 mb-2 flex items-center gap-3">
+        <span className="flex items-center gap-1"><i style={{width:9,height:9,borderRadius:'50%',background:'#ef4444',display:'inline-block'}}></i>3</span>
+        <span className="flex items-center gap-1"><i style={{width:9,height:9,borderRadius:'50%',background:'#f59e0b',display:'inline-block'}}></i>2</span>
+        <span className="flex items-center gap-1"><i style={{width:9,height:9,borderRadius:'50%',background:'#38bdf8',display:'inline-block'}}></i>1</span>
+        <span className="text-zinc-600">pt</span>
+      </div>
+      <div className="overflow-x-auto -mx-1 px-1">
+        <div style={wide?{minWidth:`${cols.length*18}px`}:{}}>
+          <div className="grid mb-1" style={{gridTemplateColumns:gridCols}}>
+            {cols.map(c=><div key={c.id} className="text-[7px] text-zinc-500 text-center leading-none">{c.isFinal?'ARR':c.label}</div>)}
+          </div>
+          {rows.map(r=>(
+            <div key={r.id} className="mb-1.5">
+              <div className="text-[10px] flex items-center gap-1 truncate mb-0.5">{getRole(roles,r)&&<span>{ROLE_ICON[getRole(roles,r)]}</span>}<span className="font-bold text-red-500">{r.bib}</span><span className="truncate">{r.name}</span><span className="text-zinc-600 shrink-0">· {r.points} pts</span></div>
+              <div className="grid items-center" style={{gridTemplateColumns:gridCols}}>
+                {cols.map(c=>{const p=(ptsMap[r.id]||{})[c.id];const col=dotColor(p);return <div key={c.id} className="flex justify-center py-0.5">{col?<div style={{width:11,height:11,borderRadius:'50%',background:col}}></div>:<div style={{width:5,height:1,background:'#27272a'}}></div>}</div>;})}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="text-[9px] text-zinc-600 mt-1">Lignes : top 3 + tes coureurs ⭐ · colonnes : points 20→1 + arrivée.</div>
+    </div>
   );
 }
 
 function RaceReport({skaters,sprintResults,structure,roles,ranking}){
-  const report=useMemo(()=>buildReport(skaters,sprintResults,structure),[skaters,sprintResults,structure]);
-  const coachedIds=skaters.filter(s=>getRole(roles,s)==='mine').map(s=>s.id);
-  const targetIds=skaters.filter(s=>['primary','secondary'].includes(getRole(roles,s))).map(s=>s.id);
   const top10=ranking.slice(0,10);
-  const Award=({label,r,detail})=>r?(<div className="flex items-center gap-2 py-1.5 border-b border-zinc-900 text-xs"><span className="flex-1 text-zinc-400">{label}</span><span className="font-bold text-red-500">{r.bib}</span><span className="truncate max-w-[100px]">{r.name}</span><span className="text-zinc-500">{detail}</span></div>):null;
-  if(!report.series.length)return <div className="p-2 text-sm text-zinc-500 text-center py-8">Aucun point saisi. Le rapport s'enrichit au fil de la course.</div>;
   return (
     <div className="space-y-4">
       <div>
-        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Progression des points (cumul)</div>
-        <CumulativeChart series={report.series} skaters={skaters} highlightIds={[...coachedIds,...targetIds]} />
-      </div>
-      <div>
-        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Analyse tactique</div>
-        <Award label="🏁 Leader virtuel le + longtemps" r={report.topLeader} detail={report.topLeader?`${report.topLeader.n} pts`:''} />
-        <Award label="📈 Plus forte remontée" r={report.comeback} detail={report.comeback?`${report.comeback.from}e→${report.comeback.to}e`:''} />
-        <Award label="🔥 Meilleur finisseur" r={report.finisher} detail={report.finisher?`${report.finisher.p} pts`:''} />
-        <Award label="⚡ Marqueur le plus précoce" r={report.early} detail={report.early?`${report.early.p} pts`:''} />
-        <Award label="🎯 Plus régulier" r={report.regular} detail={report.regular?`${report.regular.c} pts marqués`:''} />
+        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Timeline des prises de points</div>
+        <PointsTimeline skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} ranking={ranking} />
       </div>
       <div>
         <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Top 10 final</div>
@@ -901,19 +875,6 @@ function RaceReport({skaters,sprintResults,structure,roles,ranking}){
           {top10.map(r=>(<div key={r.id} className="flex items-center gap-2 text-xs py-1 border-b border-zinc-900"><span className="w-5 text-right text-zinc-400">{r.rank}</span>{getRole(roles,r)&&<span>{ROLE_ICON[getRole(roles,r)]}</span>}<span className="font-bold text-red-500 w-9 text-center">{r.bib}</span><span className="flex-1 truncate">{r.name}</span>{r.laps!==0&&<span className={r.laps>0?'text-emerald-400':'text-red-400'}>{r.laps>0?'+':''}{r.laps}T</span>}<span className="font-bold">{r.points}</span></div>))}
         </div>
       </div>
-      {coachedIds.length>0 && (
-        <div>
-          <div className="text-[10px] text-amber-400 uppercase tracking-wider mb-1">⭐ Mes coureurs</div>
-          {coachedIds.map(id=>{
-            const s=skaters.find(x=>x.id===id);const fr=report.finalRankList.find(x=>x.id===id)||{points:0,rank:'—'};
-            const scoredAt=report.series.filter(pt=>pt.scorers.some(sc=>sc.id===id)).map(pt=>pt.label);
-            return (<div key={id} className="border border-zinc-800 p-2 mb-1">
-              <div className="flex items-center gap-2 text-sm"><span className="font-bold text-red-500">{s.bib}</span><span className="flex-1 truncate">{s.name}</span><span className="text-zinc-400">{fr.points} pts · {fr.rank}{typeof fr.rank==='number'?'e':''}</span></div>
-              <div className="text-[10px] text-zinc-500 mt-0.5">{scoredAt.length?`A marqué aux points : ${scoredAt.join(', ')}`:'Pas encore marqué.'}</div>
-            </div>);
-          })}
-        </div>
-      )}
     </div>
   );
 }
