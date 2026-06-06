@@ -170,6 +170,14 @@ const DEFAULT_LIST=[
 // STORAGE + IMPORT
 // ============================================================
 const LS={get(k,fb){try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch{return fb;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}};
+function downloadJSON(filename,obj){
+  try{
+    const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1500);
+  }catch(e){alert('Export impossible: '+e.message);}
+}
 async function importViaApi({imageData,mediaType,pdfData,text}){
   const res=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageData,mediaType,pdfData,text})});
   let data; try{data=await res.json();}catch{throw new Error("Import : nécessite la fonction serveur (étape 2). La saisie manuelle marche.");}
@@ -273,7 +281,7 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v11.1';
+const APP_VERSION='v11.2';
 
 // ----- Événements & courses : factories + migration -----
 const rid=()=>Math.random().toString(36).slice(2,9);
@@ -375,6 +383,32 @@ function App(){
   const duplicateRace=(id)=>patchEvent(e=>{const r=e.races.find(x=>x.id===id);if(!r)return e;const copy={...r,id:rid(),label:r.label+' (copie)',live:{sprintResults:[...(r.live?.sprintResults||[])],lapChanges:{...(r.live?.lapChanges||{})}}};return {...e,races:[...e.races,copy]};});
   const duplicateEvent=(id)=>setEvents(prev=>{const e=prev.find(x=>x.id===id);if(!e)return prev;const copy=JSON.parse(JSON.stringify(e));copy.id=rid();copy.name=e.name+' (copie)';copy.races=copy.races.map(r=>({...r,id:rid()}));return [copy,...prev];});
 
+  // EXPORT / IMPORT JSON — la base de données du projet
+  const exportAll=()=>{
+    const payload={app:'RaceEngine',version:APP_VERSION,exportedAt:new Date().toISOString(),
+      events:events.map(ev=>({...ev,races:ev.races.map(r=>{
+        if(r.module==='points'){
+          const rk=computeRanking(ev.roster,r.live?.sprintResults||[],r.live?.lapChanges||{});
+          return {...r,result:rk.map(x=>({rank:x.rank,bib:x.bib,name:x.name,club:x.club,nat:x.nat,cat:x.cat,points:x.points,laps:x.laps,status:x.status||null}))};
+        }
+        return r;
+      })}))};
+    const slug=(event.name||'race-engine').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40);
+    downloadJSON(`${slug||'race-engine'}-${new Date().toISOString().slice(0,10)}.json`,payload);
+    showToast('Export JSON généré','gain');
+  };
+  const importAll=(parsed)=>{
+    if(!parsed||!Array.isArray(parsed.events)||!parsed.events.length){showToast('Fichier JSON invalide','loss');return;}
+    const evs=parsed.events.map(e=>({
+      id:e.id||rid(),name:e.name||'Événement',date:e.date||today(),location:e.location||'',
+      roster:Array.isArray(e.roster)?e.roster.map((s,i)=>({id:s.id||i+1,bib:Number(s.bib)||0,name:s.name||`Coureur ${s.bib||i+1}`,club:s.club||'',nat:(s.nat||'FRA').toUpperCase(),cat:s.cat||'Senior',status:s.status||null})):[],
+      roles:e.roles&&typeof e.roles==='object'?e.roles:{},
+      races:(Array.isArray(e.races)&&e.races.length?e.races:[makeRace('points')]).map(r=>({id:r.id||rid(),module:r.module||'points',label:r.label||'Course',config:r.config||defaultPointsConfig(),live:{sprintResults:Array.isArray(r.live?.sprintResults)?r.live.sprintResults:[],lapChanges:r.live?.lapChanges||{}}}))
+    }));
+    setEvents(evs);setActiveEventId(evs[0].id);setActiveRaceId(evs[0].races[0].id);setActiveSprintIdx(0);setLastSprintId(null);
+    showToast(`${evs.length} événement(s) importé(s)`,'gain');
+  };
+
   const structure=useMemo(()=>mod.id==='points'?buildRaceConfig(config):{sprints:[]},[mod.id,config]);
   const ranking=useMemo(()=>computeRanking(skaters,sprintResults,lapChanges),[skaters,sprintResults,lapChanges]);
   const prevRanking=useMemo(()=>{if(lastSprintId==null)return null;const w=sprintResults.filter(s=>s.sprintId!==lastSprintId);if(w.length===sprintResults.length)return null;return computeRanking(skaters,w,lapChanges);},[skaters,sprintResults,lapChanges,lastSprintId]);
@@ -400,7 +434,7 @@ function App(){
       </header>
 
       <main className="flex-1 overflow-y-auto">
-        {tab==='event' && <EventScreen {...{event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,duplicateRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent,duplicateEvent}} />}
+        {tab==='event' && <EventScreen {...{event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,duplicateRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent,duplicateEvent,exportAll,importAll}} />}
         {tab==='coureurs' && <CoureursScreen {...{skaters,roles,assignRole,assignRoleClub,setShowImport,roleCounts}} />}
         {tab==='saisie' && (mod.operational
           ? <PointsInput {...{structure,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById,rankById}} />
@@ -469,17 +503,28 @@ function ModuleSoon({mod}){
 // ============================================================
 // ÉCRAN COURSE (réglages + sauvegarde + historique)
 // ============================================================
-function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,duplicateRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent,duplicateEvent}){
+function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRace,deleteRace,duplicateRace,config,onCat,onDisc,setCircuitLength,setTotalDistance,resetRace,structure,createEvent,events,selectEvent,deleteEvent,duplicateEvent,exportAll,importAll}){
   const upd=(k,v)=>updateEventMeta({[k]:v});
+  const onImportFile=(e)=>{const f=e.target.files?.[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{importAll(JSON.parse(r.result));}catch(err){alert('Fichier illisible: '+err.message);}};r.readAsText(f);e.target.value='';};
   return (
     <div className="p-4 space-y-5">
       <div className="text-[10px] text-emerald-500 flex items-center gap-1"><span>✓</span> Sauvegardé automatiquement sur cet appareil · <span className="text-zinc-500">{APP_VERSION}</span></div>
+
       <Block title="Événement">
-        <Field label="Nom de l'événement"><input value={event.name} onChange={e=>upd('name',e.target.value)} placeholder="ex : Championnats d'Europe 2026" className="w-full bg-black border border-zinc-700 px-3 py-2 text-base outline-none focus:border-red-500" /></Field>
+        <Field label="Nom de l'événement"><input value={event.name} onChange={e=>upd('name',e.target.value)} placeholder="ex : Championnats d'Europe 2026" className="w-full bg-black border border-zinc-700 px-3 py-3 text-lg outline-none focus:border-red-500" /></Field>
+        <Field label="📍 Lieu"><input value={event.location||''} onChange={e=>upd('location',e.target.value)} placeholder="ex : Geisingen" className="w-full bg-black border border-zinc-700 px-3 py-3 text-base outline-none focus:border-red-500" /></Field>
+        <Field label="📅 Date"><input type="date" value={event.date} onChange={e=>upd('date',e.target.value)} className="w-full bg-black border border-zinc-700 px-3 py-3 text-base outline-none focus:border-red-500" /></Field>
+      </Block>
+
+      <Block title="Sauvegarde / Transfert des données">
         <div className="grid grid-cols-2 gap-2">
-          <Field label="Date"><input type="date" value={event.date} onChange={e=>upd('date',e.target.value)} className="w-full bg-black border border-zinc-700 px-2 text-sm outline-none focus:border-red-500" style={{height:'42px'}} /></Field>
-          <Field label="Lieu"><input value={event.location||''} onChange={e=>upd('location',e.target.value)} placeholder="ex : Geisingen" className="w-full bg-black border border-zinc-700 px-2 text-sm outline-none focus:border-red-500" style={{height:'42px'}} /></Field>
+          <button onClick={exportAll} className="py-3 border border-emerald-700 bg-emerald-950/20 text-emerald-300 text-sm font-bold uppercase tracking-wider">📤 Exporter</button>
+          <label className="py-3 border border-zinc-700 text-zinc-300 text-sm font-bold uppercase tracking-wider text-center cursor-pointer flex items-center justify-center">
+            📥 Importer
+            <input type="file" accept="application/json,.json" onChange={onImportFile} className="hidden" />
+          </label>
         </div>
+        <div className="text-[10px] text-zinc-500">Export JSON complet (événements, courses, coureurs, clubs, nations, rôles, points, classement final). Sert d'archive, de transfert entre appareils/coachs, et de matière première pour l'analyse future. ⚠️ L'import remplace les données actuelles.</div>
       </Block>
 
       <Block title={`Courses de l'événement · ${event.races.length}`}>
