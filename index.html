@@ -208,6 +208,66 @@ function buildAthleteBase(events){
   }));
   return base;
 }
+
+// ============================================================
+// extractFeatures(log, athleteKey, pointOrder)
+// Moteur de features tactiques. Fonctionne sur un log COMPLET ou PARTIEL
+// (donc utilisable hors-ligne pour les profils ET en live pour l'assistant).
+// Cette version exploite les features LIBRES (dérivées du log de points) :
+//   F1 = phase de marquage · F5 = état virtuel (rang/écart au moment des points) · F8 = arrivée.
+// Les emplacements TAG (F2,F3,F4,F6,F7) sont réservés pour le futur séquenceur.
+// pointOrder = [{label, isFinal}] dans l'ordre de course (depuis structure.sprints).
+// ============================================================
+function extractFeatures(log, athleteKey, pointOrder){
+  const scoring=(log||[]).filter(e=>e.type==='POINT'||e.type==='ARRIVEE').slice().sort((a,b)=>(a.seq||0)-(b.seq||0));
+  if(!scoring.length)return null;
+  // mapping phase par libellé de point
+  const nonFinal=(pointOrder||[]).filter(p=>!p.isFinal);
+  const nf=nonFinal.length||1;
+  const phaseOfLabel={};
+  nonFinal.forEach((p,i)=>{phaseOfLabel[p.label]= i<nf/3?'debut': i<2*nf/3?'milieu':'fin';});
+  const phaseOfEvent=(e)=> (e.type==='ARRIVEE')?'arrivee':(phaseOfLabel[e.point]||'milieu');
+
+  const cum={};let total=0;
+  const moments=[];const phasePts={debut:0,milieu:0,fin:0,arrivee:0};
+  let finish={scored:false,rank:null,pts:0};
+  scoring.forEach(e=>{
+    (e.positions||[]).forEach(p=>{if(p.athleteKey)cum[p.athleteKey]=(cum[p.athleteKey]||0)+(p.pts||0);});
+    const mine=(e.positions||[]).find(p=>p.athleteKey===athleteKey);
+    if(mine){
+      const pts=mine.pts||0;total+=pts;
+      const ph=phaseOfEvent(e);phasePts[ph]+=pts;
+      const sorted=Object.entries(cum).sort((a,b)=>b[1]-a[1]);
+      const rank=sorted.findIndex(([k])=>k===athleteKey)+1;
+      const leaderPts=sorted.length?sorted[0][1]:0;
+      const gap=leaderPts-(cum[athleteKey]||0);
+      moments.push({phase:ph,pts,rank,gap});
+      if(e.type==='ARRIVEE')finish={scored:true,rank:mine.rank,pts};
+    }
+  });
+  if(total===0)return null;
+  const share=(x)=>+(x/total).toFixed(3);
+  const F1={debut:share(phasePts.debut),milieu:share(phasePts.milieu),fin:share(phasePts.fin),arrivee:share(phasePts.arrivee)};
+  const avg=(f)=>moments.length?+(moments.reduce((s,m)=>s+f(m),0)/moments.length).toFixed(2):null;
+  const leading=moments.filter(m=>m.rank===1||m.gap<=0).length;
+  const F5={
+    avgRank:avg(m=>m.rank),
+    avgGap:avg(m=>m.gap),
+    scoredLeadingShare:moments.length?+(leading/moments.length).toFixed(2):0,
+    phaseTypique:Object.entries(F1).sort((a,b)=>b[1]-a[1])[0][0]
+  };
+  const labels=[];
+  if(F1.debut>=0.45)labels.push('scoreur_precoce');
+  if((F1.fin+F1.arrivee)>=0.55)labels.push('scoreur_tardif');
+  if(F5.scoredLeadingShare>=0.6)labels.push('controleur');
+  return {
+    athleteKey, totalPoints:total, scoringEvents:moments.length,
+    F1_phase:F1, F5_trigger:F5, F8_finish:finish,
+    // emplacements TAG — à remplir par le séquenceur (Partie 4 de la colonne vertébrale)
+    F2_position:null, F3_sprint:null, F4_attack:null, F6_work:null, F7_efficiency:null,
+    labels
+  };
+}
 async function importViaApi({imageData,mediaType,pdfData,text}){
   const res=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageData,mediaType,pdfData,text})});
   let data; try{data=await res.json();}catch{throw new Error("Import : nécessite la fonction serveur (étape 2). La saisie manuelle marche.");}
@@ -311,13 +371,16 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v15';
+const APP_VERSION='v16';
 const SCHEMA_VERSION=1;
 // Taxonomie des événements (figée — voir ARCHITECTURE-DONNEES.md). Extensible sans rupture.
 const EVENT_TYPES={
   auto:['POINT','ARRIVEE','LAP_GAIN','LAP_LOSS','DNF','DSQ','PENALTY'],
-  tactical:['SPRINT','ATTAQUE','CONTRE','ECHAPPEE','RETOUR','PLACEMENT','RELAIS','BLOC','CHUTE','EFFORT_FAIBLE','EFFORT_MOYEN','EFFORT_FORT','NOTE']
+  // CONTRE n'est pas un type : c'est une ATTAQUE avec tag SUR_CONTRE
+  tactical:['SPRINT','ATTAQUE','ECHAPPEE','RETOUR','PLACEMENT','RELAIS','BLOCAGE','CHUTE','ACCELERATION','RALENTISSEMENT','EFFORT_FAIBLE','EFFORT_MOYEN','EFFORT_FORT','NOTE']
 };
+const EVENT_TAGS=['EN_TETE','DANS_LA_ROUE','OPPORTUNISTE','LANCE_DE_LOIN','SPRINT_LONG','SPRINT_COURT','SORTIE_VIRAGE','ASPIRATION','SUR_CONTRE','DEPUIS_ECHAPPEE'];
+const EVENT_PARTS=['INITIATEUR','SUIVEUR','RAMENEUR','LANCEUR','BENEFICIAIRE'];
 const EVENT_GROUPS=['tete','echappee','contre','peloton','chasse','queue','decroche'];
 
 // ----- Événements & courses : factories + migration -----
@@ -426,8 +489,14 @@ function App(){
       athletes:buildAthleteBase(events),
       events:events.map(ev=>({...ev,races:ev.races.map(r=>{
         if(r.module==='points'){
+          const st=buildRaceConfig(r.config||defaultPointsConfig());
+          const log=buildEventLog(ev.roster,r);
+          const pointOrder=st.sprints.map(s=>({label:s.label,isFinal:!!s.isFinal}));
           const rk=computeRanking(ev.roster,r.live?.sprintResults||[],r.live?.lapChanges||{});
-          return {...r,video:r.video||null,log:buildEventLog(ev.roster,r),result:rk.map(x=>({rank:x.rank,bib:x.bib,name:x.name,club:x.club,nat:x.nat,cat:x.cat,points:x.points,laps:x.laps,status:x.status||null}))};
+          const keys=new Set();log.forEach(e=>(e.positions||[]).forEach(p=>{if(p.athleteKey)keys.add(p.athleteKey);}));
+          const features={};
+          keys.forEach(key=>{const f=extractFeatures(log,key,pointOrder);if(f){const sk=ev.roster.find(s=>nameKey(s)===key);f.name=sk?sk.name:key;f.bib=sk?sk.bib:null;features[key]=f;}});
+          return {...r,video:r.video||null,log,result:rk.map(x=>({rank:x.rank,bib:x.bib,name:x.name,club:x.club,nat:x.nat,cat:x.cat,points:x.points,laps:x.laps,status:x.status||null})),features};
         }
         return r;
       })}))};
