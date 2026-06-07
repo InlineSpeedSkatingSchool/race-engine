@@ -371,7 +371,7 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v19';
+const APP_VERSION='v20';
 const SCHEMA_VERSION=1;
 // Taxonomie des événements (figée — voir ARCHITECTURE-DONNEES.md). Extensible sans rupture.
 const EVENT_TYPES={
@@ -547,7 +547,7 @@ function App(){
           ? <PointsInput {...{structure,activeSprint,activeSprintIdx,setActiveSprintIdx,skaters,roles,sprintResults,updateSprint,lapChanges,setLap,setStatus,pointsInfo,pointsById,rankById}} />
           : <ModuleSoon mod={mod} />)}
         {tab==='classement' && (mod.operational
-          ? <PointsBoard {...{ranking:rankingWithMove,teamRanking,roles,pointsInfo,skaters,sprintResults,structure}} />
+          ? <PointsBoard {...{ranking:rankingWithMove,teamRanking,roles,pointsInfo}} />
           : <ModuleSoon mod={mod} />)}
         {tab==='analyse' && (mod.operational
           ? <AnalyseScreen {...{skaters,sprintResults,structure,roles,ranking}} />
@@ -561,7 +561,7 @@ function App(){
       )}
 
       <nav className="safe-bottom bg-black border-t border-zinc-800 grid grid-cols-5 shrink-0">
-        {[{id:'event',label:'ÉVÉN.',icon:'📅'},{id:'coureurs',label:'COUR.',icon:'👥'},{id:'saisie',label:'SAISIE',icon:'⏱'},{id:'classement',label:'CLASST',icon:'🏆'},{id:'analyse',label:'ANALYSE',icon:'📈'}].map(t=>(
+        {[{id:'event',label:'ÉVÉN.',icon:'📅'},{id:'coureurs',label:'COUR.',icon:'👥'},{id:'saisie',label:'SAISIE',icon:'⏱'},{id:'classement',label:'CLASST',icon:'🏆'},{id:'analyse',label:'DÉBRIEF',icon:'📋'}].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} className={`py-3 flex flex-col items-center gap-0.5 ${tab===t.id?'text-red-500':'text-zinc-500'}`}>
             <span className="text-base leading-none">{t.icon}</span><span className="text-[8px] tracking-wider">{t.label}</span>
           </button>
@@ -894,67 +894,18 @@ function FastSprintInput({sprint,skaters,roles,pointsById,rankById,existing,onCh
 // TIMELINE DES PRISES DE POINTS — lecture tactique immédiate
 // 🔴 3 pts · 🟡 2 pts · 🔵 1 pt (arrivée 3-2-1)
 // ============================================================
-function PointsTimeline({skaters,sprintResults,structure,roles,ranking}){
-  const cols=structure.sprints;
-  const ptsMap={};
-  sprintResults.forEach(sp=>{const f=!!sp.isFinal;sp.positions.forEach((id,idx)=>{(ptsMap[id]=ptsMap[id]||{})[sp.sprintId]=pointsForPosition(idx+1,f);});});
-  const top3=ranking.filter(r=>!r.statusVoid).slice(0,3);
-  const coached=ranking.filter(r=>getRole(roles,r)==='mine');
-  const seen={},rows=[];[...top3,...coached].forEach(r=>{if(!seen[r.id]){seen[r.id]=1;rows.push(r);}});
-  if(!sprintResults.length)return <div className="text-sm text-zinc-500 text-center py-8">Aucun point saisi. Le tableau se construit au fil de la course.</div>;
-  const gridCols=`repeat(${cols.length}, 1fr)`;
-  return (
-    <div style={{fontFamily:'ui-monospace, monospace'}}>
-      {/* en-tête des points */}
-      <div className="grid mb-1 border-b border-zinc-800 pb-1" style={{gridTemplateColumns:gridCols}}>
-        {cols.map(c=><div key={c.id} className={`text-center leading-none ${c.isFinal?'text-red-500 font-bold text-[8px]':'text-zinc-500 text-[8px]'}`}>{c.isFinal?'AR':c.label}</div>)}
-      </div>
-      {rows.map(r=>(
-        <div key={r.id} className="mb-2">
-          <div className="text-[11px] flex items-center gap-1 truncate">{getRole(roles,r)&&<span>{ROLE_ICON[getRole(roles,r)]}</span>}<span className="font-bold text-red-500">{r.bib}</span><span className="truncate">{r.name}</span><span className="text-zinc-500 shrink-0">· {r.points} pts</span></div>
-          <div className="grid items-center" style={{gridTemplateColumns:gridCols}}>
-            {cols.map(c=>{const p=(ptsMap[r.id]||{})[c.id];return <div key={c.id} className={`text-center text-[11px] leading-tight ${p?(c.isFinal?'text-red-400 font-bold':'text-zinc-100 font-bold'):'text-zinc-700'}`}>{p||'·'}</div>;})}
-          </div>
-        </div>
-      ))}
-      <div className="text-[9px] text-zinc-600 mt-1">Top 3 + tes coureurs ⭐ · colonnes 20→1 + AR (arrivée) · valeur = points pris.</div>
-    </div>
-  );
-}
-
-function RaceReport({skaters,sprintResults,structure,roles,ranking}){
-  const top10=ranking.slice(0,10);
-  return (
-    <div className="space-y-4">
-      <div>
-        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Tableau des prises de points</div>
-        <PointsTimeline skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} ranking={ranking} />
-      </div>
-      <div>
-        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Top 10 final</div>
-        <div className="space-y-px">
-          {top10.map(r=>(<div key={r.id} className="flex items-center gap-2 text-xs py-1 border-b border-zinc-900"><span className="w-5 text-right text-zinc-400">{r.rank}</span>{getRole(roles,r)&&<span>{ROLE_ICON[getRole(roles,r)]}</span>}<span className="font-bold text-red-500 w-9 text-center">{r.bib}</span><span className="flex-1 truncate">{r.name}</span>{r.laps!==0&&<span className={r.laps>0?'text-emerald-400':'text-red-400'}>{r.laps>0?'+':''}{r.laps}T</span>}<span className="font-bold">{r.points}</span></div>))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PointsBoard({ranking,teamRanking,roles,pointsInfo,skaters,sprintResults,structure}){
+function PointsBoard({ranking,teamRanking,roles,pointsInfo}){
   const [view,setView]=useState('indiv');
   return (
     <div className="p-4">
-      <div className="grid grid-cols-3 gap-1 mb-2">
+      <div className="grid grid-cols-2 gap-1 mb-2">
         <button onClick={()=>setView('indiv')} className={`py-2 text-xs uppercase tracking-wider border ${view==='indiv'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>Individuel</button>
         <button onClick={()=>setView('team')} className={`py-2 text-xs uppercase tracking-wider border ${view==='team'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>Équipes</button>
-        <button onClick={()=>setView('report')} className={`py-2 text-xs uppercase tracking-wider border ${view==='report'?'border-red-500 bg-red-500/10 text-red-400':'border-zinc-800 text-zinc-500'}`}>📋 Débrief</button>
       </div>
-      {view==='report' && <RaceReport skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} ranking={ranking} />}
-      {view!=='report' && (<>
       <div className="flex justify-between items-center text-[10px] text-zinc-500 mb-2 px-1">
         <span>{pointsInfo.remaining} point{pointsInfo.remaining>1?'s':''} restant{pointsInfo.remaining>1?'s':''}</span>
         <span><span className="text-zinc-300 font-bold">{pointsInfo.total}</span> pts à distribuer · max <span className="text-zinc-300 font-bold">{pointsInfo.maxSolo}</span>/coureur</span>
-      </div></>)}
+      </div>
       {view==='indiv'&&(
         <div className="space-y-px">
           <div className="text-[9px] text-zinc-600 uppercase mb-1">Tours › Pts › Dernier point › Arrivée</div>
@@ -1044,9 +995,16 @@ function PointsFrise({skaters,sprintResults,structure,roles,ranking}){
 }
 
 function AnalyseScreen({skaters,sprintResults,structure,roles,ranking}){
-  if(!sprintResults.length)return <div className="p-4 text-sm text-zinc-500 text-center py-10">Aucun point saisi. L'analyse post-course apparaîtra ici.</div>;
+  if(!sprintResults.length)return <div className="p-4 text-sm text-zinc-500 text-center py-10">Aucun point saisi. Le débrief apparaîtra ici dès les premiers points.</div>;
+  const top10=ranking.slice(0,10);
   return (
     <div className="p-4 space-y-6">
+      <div>
+        <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Classement final · Top 10</div>
+        <div className="space-y-px">
+          {top10.map(r=>(<div key={r.id} className="flex items-center gap-2 text-xs py-1 border-b border-zinc-900"><span className="w-5 text-right text-zinc-400">{r.rank}</span>{getRole(roles,r)&&<span>{ROLE_ICON[getRole(roles,r)]}</span>}<span className="font-bold text-red-500 w-9 text-center">{r.bib}</span><span className="flex-1 truncate">{r.name}</span>{r.laps!==0&&<span className={r.laps>0?'text-emerald-400':'text-red-400'}>{r.laps>0?'+':''}{r.laps}T</span>}<span className="font-bold">{r.points}</span></div>))}
+        </div>
+      </div>
       <div><div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Timeline de course</div><CompactTimeline skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} /></div>
       <div><div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Frise des prises de points</div><PointsFrise skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} ranking={ranking} /></div>
       <div className="h-4" />
