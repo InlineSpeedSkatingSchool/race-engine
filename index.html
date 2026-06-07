@@ -371,7 +371,7 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v16';
+const APP_VERSION='v17';
 const SCHEMA_VERSION=1;
 // Taxonomie des événements (figée — voir ARCHITECTURE-DONNEES.md). Extensible sans rupture.
 const EVENT_TYPES={
@@ -549,6 +549,9 @@ function App(){
         {tab==='classement' && (mod.operational
           ? <PointsBoard {...{ranking:rankingWithMove,teamRanking,roles,pointsInfo,skaters,sprintResults,structure}} />
           : <ModuleSoon mod={mod} />)}
+        {tab==='analyse' && (mod.operational
+          ? <AnalyseScreen {...{skaters,sprintResults,structure,roles,ranking}} />
+          : <ModuleSoon mod={mod} />)}
       </main>
 
       {toast && (
@@ -557,10 +560,10 @@ function App(){
         </div>
       )}
 
-      <nav className="safe-bottom bg-black border-t border-zinc-800 grid grid-cols-4 shrink-0">
-        {[{id:'event',label:'ÉVÉNEMENT',icon:'📅'},{id:'coureurs',label:'COUREURS',icon:'👥'},{id:'saisie',label:'SAISIE',icon:'⏱'},{id:'classement',label:'CLASST',icon:'🏆'}].map(t=>(
+      <nav className="safe-bottom bg-black border-t border-zinc-800 grid grid-cols-5 shrink-0">
+        {[{id:'event',label:'ÉVÉN.',icon:'📅'},{id:'coureurs',label:'COUR.',icon:'👥'},{id:'saisie',label:'SAISIE',icon:'⏱'},{id:'classement',label:'CLASST',icon:'🏆'},{id:'analyse',label:'ANALYSE',icon:'📈'}].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} className={`py-3 flex flex-col items-center gap-0.5 ${tab===t.id?'text-red-500':'text-zinc-500'}`}>
-            <span className="text-base leading-none">{t.icon}</span><span className="text-[9px] tracking-wider">{t.label}</span>
+            <span className="text-base leading-none">{t.icon}</span><span className="text-[8px] tracking-wider">{t.label}</span>
           </button>
         ))}
       </nav>
@@ -987,6 +990,78 @@ function PointsBoard({ranking,teamRanking,roles,pointsInfo,skaters,sprintResults
 // ============================================================
 // IMPORT MODAL
 // ============================================================
+// ============================================================
+// ANALYSE — couche de visualisation des points (lecture seule)
+// Ne modifie aucun calcul, aucune feature, aucune donnée.
+// ============================================================
+function PointsCurve({skaters,sprintResults,structure,roles}){
+  const resById={};sprintResults.forEach(r=>resById[r.sprintId]=r);
+  const cols=structure.sprints;
+  const cum={};const series={};const scored=new Set();
+  cols.forEach(sp=>{const res=resById[sp.id];if(res){const f=!!sp.isFinal;res.positions.forEach((id,idx)=>{cum[id]=(cum[id]||0)+pointsForPosition(idx+1,f);scored.add(id);});}skaters.forEach(s=>{(series[s.id]=series[s.id]||[]).push(cum[s.id]||0);});});
+  const riders=skaters.filter(s=>scored.has(s.id));
+  if(!riders.length)return <div className="text-xs text-zinc-600 text-center py-6">Pas encore de points.</div>;
+  const maxPts=Math.max(1,...riders.map(s=>cum[s.id]||0));
+  const W=340,H=200,padL=14,padB=14,padT=6,padR=18;const n=cols.length;
+  const x=(i)=>padL+(n<=1?0:i*(W-padL-padR)/(n-1));
+  const y=(p)=>H-padB-(p/maxPts)*(H-padB-padT);
+  const colorOf=(s)=>{const r=getRole(roles,s);return r==='mine'?'#f59e0b':r==='primary'?'#ef4444':r==='secondary'?'#fb923c':clubColor(s.club);};
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{background:'#000'}}>
+      {[0,Math.round(maxPts/2),maxPts].map((g,i)=><g key={i}><line x1={padL} y1={y(g)} x2={W-padR} y2={y(g)} stroke="#27272a" strokeWidth="0.5"/><text x={1} y={y(g)+3} fill="#52525b" fontSize="6">{g}</text></g>)}
+      {cols.map((c,i)=>c.isFinal?<text key={i} x={x(i)} y={H-3} fill="#52525b" fontSize="6" textAnchor="middle">AR</text>:(i===0?<text key={i} x={x(i)} y={H-3} fill="#52525b" fontSize="6">{c.label}</text>:null))}
+      {riders.map(s=>{const hl=!!getRole(roles,s);const color=colorOf(s);let d='';series[s.id].forEach((v,i)=>{d+=(i===0?'M':'L')+x(i).toFixed(1)+' '+y(v).toFixed(1)+' ';});return <g key={s.id}><path d={d} fill="none" stroke={color} strokeWidth={hl?1.7:0.8} opacity={hl?1:0.5}/><text x={W-padR+1} y={y(cum[s.id])+2.5} fill={color} fontSize="6.5" opacity={hl?1:0.6}>{s.bib}</text></g>;})}
+    </svg>
+  );
+}
+
+function CompactTimeline({skaters,sprintResults,structure,roles}){
+  const byId={};skaters.forEach(s=>byId[s.id]=s);
+  const resById={};sprintResults.forEach(r=>resById[r.sprintId]=r);
+  const surname=(s)=>s?s.name.split(' ')[0]:'?';
+  return (
+    <div className="space-y-0.5" style={{fontFamily:'ui-monospace,monospace'}}>
+      {structure.sprints.map(sp=>{const res=resById[sp.id];const isFinal=!!sp.isFinal;const label=isFinal?'ARR':'T'+sp.label;
+        if(!res||!res.positions.length)return <div key={sp.id} className="text-[11px] leading-snug"><span className="text-zinc-500 font-bold">{label}</span> <span className="text-zinc-700">· —</span></div>;
+        return <div key={sp.id} className="text-[11px] leading-snug">
+          <span className={`font-bold ${isFinal?'text-red-500':'text-zinc-400'}`}>{label}</span>
+          {res.positions.map((id,idx)=>{const pts=pointsForPosition(idx+1,isFinal);const s=byId[id];const role=s&&getRole(roles,s);return <span key={idx}> · {role?ROLE_ICON[role]:''}<span className="text-zinc-200">{surname(s)}</span> <span className="text-red-400">+{pts}</span></span>;})}
+        </div>;
+      })}
+    </div>
+  );
+}
+
+function PointsBreakdown({skaters,sprintResults,structure,roles,ranking}){
+  const byId={};skaters.forEach(s=>byId[s.id]=s);
+  const spById={};structure.sprints.forEach(sp=>spById[sp.id]=sp);
+  const list={};
+  sprintResults.forEach(sp=>{const meta=spById[sp.sprintId]||{};const isFinal=!!(sp.isFinal||meta.isFinal);sp.positions.forEach((id,idx)=>{const pts=pointsForPosition(idx+1,isFinal);(list[id]=list[id]||[]).push({label:isFinal?'ARR':'T'+meta.label,pts,order:meta.id||0,isFinal});});});
+  const totalById={};ranking.forEach(r=>totalById[r.id]=r.points);
+  const rows=Object.keys(list).map(id=>({id:Number(id),items:list[id].slice().sort((a,b)=>a.order-b.order),total:totalById[id]||0})).sort((a,b)=>b.total-a.total);
+  return (
+    <div className="space-y-2">
+      {rows.map(row=>{const s=byId[row.id];const role=s&&getRole(roles,s);return (
+        <div key={row.id} className="border border-zinc-800 p-2">
+          <div className="text-sm flex items-center gap-1">{role&&<span>{ROLE_ICON[role]}</span>}<span className="font-bold text-red-500">{s?s.bib:'?'}</span><span className="flex-1 truncate">{s?s.name:'?'}</span><span className="font-bold">{row.total} pts</span></div>
+          <div className="flex flex-wrap gap-1 mt-1" style={{fontFamily:'ui-monospace,monospace'}}>{row.items.map((it,i)=><span key={i} className={`text-[10px] px-1.5 py-0.5 border ${it.isFinal?'border-red-800 text-red-300':'border-zinc-700 text-zinc-300'}`}>{it.label}(+{it.pts})</span>)}</div>
+        </div>);})}
+    </div>
+  );
+}
+
+function AnalyseScreen({skaters,sprintResults,structure,roles,ranking}){
+  if(!sprintResults.length)return <div className="p-4 text-sm text-zinc-500 text-center py-10">Aucun point saisi. Les visualisations apparaîtront ici au fil de la course.</div>;
+  return (
+    <div className="p-4 space-y-6">
+      <div><div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Courbe de progression des points</div><PointsCurve skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} /><div className="text-[9px] text-zinc-600 mt-1">Cumul des points · ⭐🔴🟠 en couleur, le reste en gris · tous les marqueurs affichés.</div></div>
+      <div><div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Timeline de course</div><CompactTimeline skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} /></div>
+      <div><div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-2">Résumé par athlète</div><PointsBreakdown skaters={skaters} sprintResults={sprintResults} structure={structure} roles={roles} ranking={ranking} /></div>
+      <div className="h-4" />
+    </div>
+  );
+}
+
 function ImportModal({onClose,onImport}){
   const [tab,setTab]=useState('photo');
   const [loading,setLoading]=useState(false);
