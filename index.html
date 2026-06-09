@@ -214,6 +214,8 @@ function buildAthleteBase(events){
 function buildPoints(roster, race, structure){
   const byId={};roster.forEach(s=>byId[s.id]=s);
   const cumByLap={};(race.laps||[]).forEach(l=>{cumByLap[l.lap]=l.cumTime;});
+  const lapTimeByLap={};(race.laps||[]).forEach(l=>{lapTimeByLap[l.lap]=l.lapTime;});
+  const ctx={};(race.log||[]).filter(e=>e.type==='POINT_CONTEXT'&&e.ref).forEach(e=>{ctx[e.ref.sprintId+'|'+e.ref.athleteKey]=e.tags||{};});
   const neutralized=structure.neutralizedLaps,freq=structure.frequency;
   const resById={};(race.live?.sprintResults||[]).forEach(r=>{resById[r.sprintId]=r;});
   const pts=[];
@@ -221,8 +223,8 @@ function buildPoints(roster, race, structure){
     const res=resById[sp.id];if(!res||!res.positions.length)return;
     const lap=neutralized+index*freq;
     pts.push({sprintId:sp.id,label:sp.label,index,isFinal:!!sp.isFinal,lap,
-      videoTime:cumByLap[lap]!=null?cumByLap[lap]:null,provenance:'live',
-      positions:res.positions.map((id,idx)=>({rank:idx+1,athleteKey:byId[id]?nameKey(byId[id]):null,bib:(byId[id]||{}).bib,name:(byId[id]||{}).name,value:pointsForPosition(idx+1,sp.isFinal)}))});
+      videoTime:cumByLap[lap]!=null?cumByLap[lap]:null,lapTime:lapTimeByLap[lap]!=null?lapTimeByLap[lap]:null,provenance:'live',
+      positions:res.positions.map((id,idx)=>{const k=byId[id]?nameKey(byId[id]):null;return {rank:idx+1,athleteKey:k,bib:(byId[id]||{}).bib,name:(byId[id]||{}).name,value:pointsForPosition(idx+1,sp.isFinal),context:k?(ctx[sp.id+'|'+k]||null):null};})});
   });
   return pts;
 }
@@ -388,7 +390,7 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v22';
+const APP_VERSION='v23';
 const SCHEMA_VERSION=1;
 // Taxonomie des événements (figée — voir ARCHITECTURE-DONNEES.md). Extensible sans rupture.
 const EVENT_TYPES={
@@ -398,17 +400,16 @@ const EVENT_TYPES={
 };
 const EVENT_TAGS=['EN_TETE','DANS_LA_ROUE','OPPORTUNISTE','LANCE_DE_LOIN','SPRINT_LONG','SPRINT_COURT','SORTIE_VIRAGE','ASPIRATION','SUR_CONTRE','DEPUIS_ECHAPPEE'];
 const EVENT_PARTS=['INITIATEUR','SUIVEUR','RAMENEUR','LANCEUR','BENEFICIAIRE'];
-// Types d'ACTION du séquenceur (les prises de points s'enrichissent, elles ne se recréent pas)
-const SEQ_TYPES=[['ATTAQUE','Attaque'],['PELOTON_RAMENE','Peloton ramené'],['CHUTE','Chute'],['NOTE','Note']];
-const PART_BY_TYPE={ATTAQUE:'INITIATEUR',PELOTON_RAMENE:'RAMENEUR',CHUTE:'INITIATEUR',NOTE:'INITIATEUR'};
+// 5 moves tactiques validés : [id, label, needsTarget]
+const SEQ_MOVES=[['attaque','Attaque',false],['suit_marque','Suit / Marque',true],['mene_ramene','Mène / Ramène',false],['temporise','Temporise',false],['aide_coequipier','Aide coéquipier',true]];
+const MOVE_OUTCOMES=[['reussie','Réussie'],['reprise','Reprise'],['sans_effet','Sans effet']];
+// Vocabulaire des tags d'enrichissement d'une prise de point (par attribution)
 const TAG_VOCAB={
   context:[['sprint_peloton','Sprint peloton'],['echappee_2','Échappée 2'],['echappee_3','Échappée 3'],['echappee_4plus','Échappée 4+']],
-  position:[['en_tete','En tête'],['dans_la_roue','Dans la roue'],['opportuniste','Opportuniste']],
-  sprintType:[['long','Sprint long'],['court','Sprint court']],
-  effort:[['faible','Faible'],['moyen','Moyen'],['fort','Fort']],
-  attackType:[['solo','Solo'],['sur_contre','Sur contre'],['sortie_virage','Sortie virage'],['avant_point','Avant point'],['apres_point','Après point']],
-  broughtBackBy:[['athlete','Athlète'],['equipe','Équipe'],['peloton','Peloton']]
+  positionBefore:[['1','P1'],['2','P2'],['3','P3'],['4','P4'],['5','P5'],['6','P6+']],
+  cost:[['1','1'],['2','2'],['3','3'],['4','4'],['5','5']]
 };
+const moveLabel=(id)=>(SEQ_MOVES.find(m=>m[0]===id)||[id,id])[1];
 const EVENT_GROUPS=['tete','echappee','contre','peloton','chasse','queue','decroche'];
 
 // ----- Événements & courses : factories + migration -----
@@ -1095,52 +1096,45 @@ function Sequenceur({race,structure,skaters,roles,pointsById,rankById,addLogEven
   const cur=()=>running?(Date.now()-startRef.current)/1000:elapsed;
   const fmt=(s)=>{s=Math.max(0,Math.floor(s));return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');};
   const laps=race.laps||[];
-  const curLap=laps.length+1; // tour en cours
+  const curLap=laps.length+1;
   const tour=()=>{const c=cur();const prev=laps.length?laps[laps.length-1].cumTime:0;addLap({lap:laps.length+1,lapTime:Math.round((c-prev)*10)/10,cumTime:Math.round(c*10)/10});};
 
-  const [mode,setMode]=useState('home'); // home | action | enrich | correction
-  const [actionType,setActionType]=useState(null);
-  const [frozen,setFrozen]=useState({videoTime:0,lap:0});
-  const [a1,setA1]=useState(null);const [a2,setA2]=useState(null);const [pick,setPick]=useState(null);
-  const [tags,setTags]=useState({});const [note,setNote]=useState('');
-  const [enrichSp,setEnrichSp]=useState(null);
+  const points=useMemo(()=>buildPoints(skaters,race,structure),[skaters,race,structure]);
+  const ctxKey=(sid,k)=>sid+'|'+k;
+  const ctxMap={};(race.log||[]).filter(e=>e.type==='POINT_CONTEXT'&&e.ref).forEach(e=>{ctxMap[ctxKey(e.ref.sprintId,e.ref.athleteKey)]=e;});
+  // map tour -> libellé point (pour annoter la vue temps au tour)
+  const lapToLabel={};structure.sprints.forEach((sp,index)=>{lapToLabel[structure.neutralizedLaps+index*structure.frequency]=sp.isFinal?'ARR':'P'+sp.label;});
+
+  const [mode,setMode]=useState('home'); // home | move | enrich | correction
+  const [showLaps,setShowLaps]=useState(false);
+  // move
+  const [moveId,setMoveId]=useState(null);const [frozen,setFrozen]=useState({videoTime:0,lap:0});
+  const [actor,setActor]=useState(null);const [target,setTarget]=useState(null);const [pick,setPick]=useState(null);
+  const [outcome,setOutcome]=useState(null);const [mcost,setMcost]=useState(null);const [note,setNote]=useState('');
+  // enrich
+  const [enrich,setEnrich]=useState(null); // {sprintId, athleteKey, label, bib, name}
+  const [etags,setEtags]=useState({});
+  // correction
   const [corr,setCorr]=useState({label:'',athlete:null,value:2});
 
-  const reset=()=>{setMode('home');setActionType(null);setA1(null);setA2(null);setPick(null);setTags({});setNote('');setEnrichSp(null);setCorr({label:'',athlete:null,value:2});};
-  const setTag=(k,v)=>setTags(t=>({...t,[k]:v}));
+  const reset=()=>{setMode('home');setMoveId(null);setActor(null);setTarget(null);setPick(null);setOutcome(null);setMcost(null);setNote('');setEnrich(null);setEtags({});setCorr({label:'',athlete:null,value:2});};
 
-  const startAction=(type)=>{setFrozen({videoTime:cur(),lap:curLap});setActionType(type);setA1(null);setA2(null);setTags({});setNote('');setPick(type==='NOTE'?null:'1');setMode('action');};
-  const saveAction=()=>{
-    if(actionType!=='NOTE'&&!a1&&!note.trim()){setPick('1');return;}
-    const actors=[];
-    if(a1)actors.push({key:nameKey(a1),part:PART_BY_TYPE[actionType],bib:a1.bib,name:a1.name});
-    if(a2)actors.push({key:nameKey(a2),part:'SUIVEUR',bib:a2.bib,name:a2.name});
-    const tg={...tags};
-    addLogEvent({id:rid(),seq:Date.now(),source:'sequencer',type:actionType,videoTime:Math.round(frozen.videoTime*10)/10,lap:frozen.lap,athletes:actors.map(a=>a.key),actors,tags:tg,note:note.trim()});
+  const needsTarget=(id)=>(SEQ_MOVES.find(m=>m[0]===id)||[])[2];
+  const startMove=(id)=>{setFrozen({videoTime:cur(),lap:curLap});setMoveId(id);setActor(null);setTarget(null);setOutcome(null);setMcost(null);setNote('');setPick('actor');setMode('move');};
+  const saveMove=()=>{
+    if(!actor){setPick('actor');return;}
+    addLogEvent({id:rid(),seq:Date.now(),source:'sequencer',type:'MOVE',move:moveId,actorKey:nameKey(actor),actorBib:actor.bib,targetKey:target?nameKey(target):null,targetBib:target?target.bib:null,outcome,videoTime:Math.round(frozen.videoTime*10)/10,lap:frozen.lap,cost:mcost?Number(mcost):null,note:note.trim()});
     reset();
   };
+  const startEnrich=(p,pos)=>{const ex=ctxMap[ctxKey(p.sprintId,pos.athleteKey)];setEnrich({sprintId:p.sprintId,athleteKey:pos.athleteKey,label:p.label,isFinal:p.isFinal,bib:pos.bib,name:pos.name,value:pos.value});setEtags(ex?{...ex.tags}:{});setMode('enrich');};
+  const saveEnrich=()=>{if(!enrich)return;const ex=ctxMap[ctxKey(enrich.sprintId,enrich.athleteKey)];if(ex)deleteLogEvent(ex.id);addLogEvent({id:rid(),seq:Date.now(),source:'sequencer',type:'POINT_CONTEXT',ref:{sprintId:enrich.sprintId,athleteKey:enrich.athleteKey},videoTime:Math.round(cur()*10)/10,lap:structure.neutralizedLaps+enrich_idx(enrich.sprintId)*structure.frequency,tags:{...etags}});reset();};
+  function enrich_idx(sid){return structure.sprints.findIndex(s=>s.id===sid);}
+  const incident=(type)=>{setFrozen({videoTime:cur(),lap:curLap});setMoveId(type);setActor(null);setNote('');setPick(type==='CHUTE'?'actor':null);setMode('move');};
+  const saveCorrection=()=>{const sp=structure.sprints.find(s=>s.label===corr.label);if(!sp||!corr.athlete)return;const index=structure.sprints.indexOf(sp);addLogEvent({id:rid(),seq:Date.now(),source:'sequencer',type:'POINT_CORRECTION',provenance:'sequencer',sprintId:sp.id,athleteKey:nameKey(corr.athlete),bib:corr.athlete.bib,name:corr.athlete.name,value:Number(corr.value),lap:structure.neutralizedLaps+index*structure.frequency,videoTime:Math.round(cur()*10)/10});reset();};
 
-  const points=useMemo(()=>buildPoints(skaters,race,structure),[skaters,race,structure]);
-  const ctxBySprint={};(race.log||[]).filter(e=>e.type==='POINT_CONTEXT').forEach(e=>{ctxBySprint[e.ref&&e.ref.sprintId]=e;});
-
-  const startEnrich=(p)=>{const ex=ctxBySprint[p.sprintId];setEnrichSp(p);setTags(ex?{...ex.tags}:{});setMode('enrich');};
-  const saveEnrich=()=>{
-    if(!enrichSp)return;
-    const ex=ctxBySprint[enrichSp.sprintId]; if(ex)deleteLogEvent(ex.id);
-    addLogEvent({id:rid(),seq:Date.now(),source:'sequencer',type:'POINT_CONTEXT',ref:{sprintId:enrichSp.sprintId},videoTime:enrichSp.videoTime,lap:enrichSp.lap,tags:{...tags}});
-    reset();
-  };
-
-  const saveCorrection=()=>{
-    const sp=structure.sprints.find(s=>s.label===corr.label.trim());
-    if(!sp||!corr.athlete){return;}
-    const index=structure.sprints.indexOf(sp);
-    addLogEvent({id:rid(),seq:Date.now(),source:'sequencer',type:'POINT_CORRECTION',provenance:'sequencer',sprintId:sp.id,athleteKey:nameKey(corr.athlete),bib:corr.athlete.bib,name:corr.athlete.name,value:Number(corr.value),lap:structure.neutralizedLaps+index*structure.frequency,videoTime:Math.round(cur()*10)/10});
-    reset();
-  };
-
-  const seqEvents=(race.log||[]).filter(e=>e.source==='sequencer').slice().sort((a,b)=>(a.videoTime||0)-(b.videoTime||0));
-  const typeLabel=(t)=>(SEQ_TYPES.find(x=>x[0]===t)||[t,t==='POINT_CONTEXT'?'Contexte point':t==='POINT_CORRECTION'?'Point (corr.)':t])[1];
+  const seqEvents=(race.log||[]).filter(e=>e.source==='sequencer'&&e.type!=='POINT_CONTEXT').slice().sort((a,b)=>(a.videoTime||0)-(b.videoTime||0));
+  const evLabel=(e)=>e.type==='MOVE'?moveLabel(e.move):e.type==='CHUTE'?'Chute':e.type==='NOTE'?'Note':e.type==='POINT_CORRECTION'?'Point (corr.)':e.type;
+  const enrichedCount=Object.keys(ctxMap).length;
 
   return (
     <div className="fixed inset-0 bg-zinc-950 z-50 flex flex-col safe-top">
@@ -1156,37 +1150,50 @@ function Sequenceur({race,structure,skaters,roles,pointsById,rankById,addLogEven
           <div className="grid grid-cols-3 gap-1 mt-2">
             <button onClick={()=>setRunning(true)} disabled={running} className="py-2 border border-emerald-700 text-emerald-300 disabled:opacity-30 text-sm uppercase">Start</button>
             <button onClick={()=>{setElapsed(cur());setRunning(false);}} disabled={!running} className="py-2 border border-amber-700 text-amber-300 disabled:opacity-30 text-sm uppercase">Pause</button>
-            <button onClick={()=>{if(confirm('Remettre le chrono à zéro ? (les tours enregistrés restent)'))( setRunning(false),setElapsed(0));}} className="py-2 border border-zinc-700 text-zinc-400 text-sm uppercase">Reset</button>
+            <button onClick={()=>{if(confirm('Chrono à zéro ? (les tours restent)')){setRunning(false);setElapsed(0);}}} className="py-2 border border-zinc-700 text-zinc-400 text-sm uppercase">Reset</button>
           </div>
           <div className="flex items-center justify-center gap-3 mt-3">
             <button onClick={()=>{if(laps.length)popLap();}} className="w-12 h-11 border border-zinc-700 text-zinc-300 text-lg">−</button>
-            <div className="text-center w-28"><div className="text-[9px] text-zinc-500 uppercase">Tour en cours</div><div className="text-2xl font-bold">{curLap}</div><div className="text-[9px] text-zinc-600">{laps.length} enreg.{laps.length?` · dernier ${laps[laps.length-1].lapTime}s`:''}</div></div>
+            <div className="text-center w-28"><div className="text-[9px] text-zinc-500 uppercase">Tour en cours</div><div className="text-2xl font-bold">{curLap}</div><div className="text-[9px] text-zinc-600">{laps.length} enreg.{laps.length?` · ${laps[laps.length-1].lapTime}s`:''}</div></div>
             <button onClick={tour} className="w-16 h-11 border border-red-700 bg-red-950/30 text-red-300 text-sm font-bold uppercase">+ Tour</button>
           </div>
+          <button onClick={()=>setShowLaps(v=>!v)} className="w-full mt-2 py-1.5 border border-zinc-800 text-zinc-400 text-[10px] uppercase tracking-wider">{showLaps?'Masquer':'Voir'} les temps au tour</button>
+          {showLaps && (
+            <div className="mt-1 max-h-40 overflow-y-auto border border-zinc-800" style={{fontFamily:'ui-monospace,monospace'}}>
+              {!laps.length && <div className="px-2 py-2 text-zinc-600 text-xs">Aucun tour enregistré.</div>}
+              {laps.map(l=>(<div key={l.lap} className="flex items-center gap-2 px-2 py-1 text-[11px] border-b border-zinc-900"><span className="text-zinc-400 w-12">Tour {l.lap}</span><span className="text-zinc-100 font-bold w-14">{l.lapTime}s</span><span className="text-zinc-600 w-14">{fmt(l.cumTime)}</span>{lapToLabel[l.lap]&&<span className="text-red-400">{lapToLabel[l.lap]}</span>}</div>))}
+            </div>
+          )}
         </div>
 
         {mode==='home' && (<>
-          {/* points à enrichir */}
+          {/* points à enrichir (par attribution) */}
           <div>
-            <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Points à enrichir ({points.length})</div>
-            {!points.length && <div className="text-xs text-zinc-600">Aucun point live sur cette course.</div>}
-            <div className="space-y-px">
-              {points.map(p=>{const done=!!ctxBySprint[p.sprintId];return (
-                <div key={p.sprintId} className="flex items-center gap-2 py-1.5 px-1 border-b border-zinc-900 text-xs">
-                  <span className={`font-bold w-8 ${p.isFinal?'text-red-500':'text-zinc-300'}`}>{p.isFinal?'ARR':'P'+p.label}</span>
-                  <span className="text-zinc-600 w-12">T{p.lap}{p.videoTime!=null?` · ${fmt(p.videoTime)}`:''}</span>
-                  <span className="flex-1 truncate">{p.positions.map(pos=>`${pos.bib}+${pos.value}`).join(' ')}</span>
-                  <button onClick={()=>startEnrich(p)} className={`px-2 py-1 border text-[11px] ${done?'border-emerald-700 text-emerald-400':'border-zinc-700 text-zinc-300'}`}>{done?'✓ Enrichi':'Enrichir'}</button>
-                </div>);})}
+            <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Points à enrichir · {enrichedCount} enrichi(s)</div>
+            {!points.length && <div className="text-xs text-zinc-600">Aucun point live.</div>}
+            <div className="space-y-1">
+              {points.map(p=>(
+                <div key={p.sprintId} className="border border-zinc-800 p-1.5">
+                  <div className="text-[10px] text-zinc-500 mb-0.5"><span className={`font-bold ${p.isFinal?'text-red-500':'text-zinc-300'}`}>{p.isFinal?'ARR':'P'+p.label}</span> · T{p.lap}{p.videoTime!=null?` · ${fmt(p.videoTime)}`:''}{p.lapTime!=null?` · ${p.lapTime}s`:''}</div>
+                  {p.positions.map(pos=>{const done=!!ctxMap[ctxKey(p.sprintId,pos.athleteKey)];return (
+                    <div key={pos.rank} className="flex items-center gap-2 py-1 text-xs">
+                      <span className="font-bold text-red-500 w-9">{pos.bib}</span><span className="flex-1 truncate">{pos.name} <span className="text-zinc-500">+{pos.value}</span></span>
+                      <button onClick={()=>startEnrich(p,pos)} className={`px-2 py-1 border text-[11px] ${done?'border-emerald-700 text-emerald-400':'border-zinc-700 text-zinc-300'}`}>{done?'✓':'Enrichir'}</button>
+                    </div>);})}
+                </div>))}
             </div>
-            <button onClick={()=>{setCorr({label:'',athlete:null,value:2});setPick('corr');setMode('correction');}} className="w-full py-1.5 mt-2 border border-zinc-800 text-zinc-500 text-[10px] uppercase tracking-wider">+ Point manquant (correction)</button>
+            <button onClick={()=>{setCorr({label:'',athlete:null,value:2});setMode('correction');}} className="w-full py-1.5 mt-2 border border-zinc-800 text-zinc-500 text-[10px] uppercase tracking-wider">+ Point manquant (correction)</button>
           </div>
 
-          {/* actions */}
+          {/* moves */}
           <div>
-            <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Ajouter une action</div>
+            <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Move tactique</div>
             <div className="grid grid-cols-2 gap-1">
-              {SEQ_TYPES.map(([id,label])=><button key={id} onClick={()=>startAction(id)} className="py-3 border border-zinc-700 text-zinc-200 text-sm active:bg-zinc-800">{label}</button>)}
+              {SEQ_MOVES.map(([id,label])=><button key={id} onClick={()=>startMove(id)} className="py-3 border border-zinc-700 text-zinc-200 text-sm active:bg-zinc-800">{label}</button>)}
+            </div>
+            <div className="grid grid-cols-2 gap-1 mt-1">
+              <button onClick={()=>incident('CHUTE')} className="py-2 border border-zinc-800 text-zinc-400 text-xs">Chute</button>
+              <button onClick={()=>incident('NOTE')} className="py-2 border border-zinc-800 text-zinc-400 text-xs">Note</button>
             </div>
           </div>
 
@@ -1198,47 +1205,45 @@ function Sequenceur({race,structure,skaters,roles,pointsById,rankById,addLogEven
                 <div key={e.id} className="flex items-center gap-2 text-xs py-1.5 px-1 border-b border-zinc-900">
                   <span className="text-zinc-500 tabular-nums w-10" style={{fontFamily:'ui-monospace,monospace'}}>{fmt(e.videoTime)}</span>
                   <span className="text-zinc-600 w-7">T{e.lap}</span>
-                  <span className="text-zinc-200 w-24 truncate">{typeLabel(e.type)}</span>
-                  <span className="flex-1 truncate text-zinc-400">{e.type==='POINT_CONTEXT'?`P${(points.find(p=>p.sprintId===(e.ref&&e.ref.sprintId))||{}).label||''} · ${Object.values(e.tags||{}).join(', ')}`:(e.athletes||[]).map(k=>(keyToSkater[k]||{}).bib||'').join(', ')+(e.tags&&Object.keys(e.tags).length?' · '+Object.values(e.tags).join(', '):'')+(e.note?` · ${e.note}`:'')}</span>
+                  <span className="text-zinc-200 w-24 truncate">{evLabel(e)}</span>
+                  <span className="flex-1 truncate text-zinc-400">{e.actorBib||''}{e.targetBib?`→${e.targetBib}`:''}{e.outcome?` · ${(MOVE_OUTCOMES.find(o=>o[0]===e.outcome)||['',''])[1].toLowerCase()}`:''}{e.value?` +${e.value}`:''}{e.note?` · ${e.note}`:''}</span>
                   <button onClick={()=>deleteLogEvent(e.id)} className="text-zinc-600 px-1">🗑</button>
-                </div>
-              ))}
+                </div>))}
               {!seqEvents.length && <div className="text-xs text-zinc-600">Rien de tagué.</div>}
             </div>
           </div>
         </>)}
 
-        {/* PANNEAU ACTION */}
-        {mode==='action' && (
+        {/* PANNEAU MOVE / INCIDENT */}
+        {mode==='move' && (
           <div className="border border-red-700 bg-red-950/10 p-3 space-y-2">
-            <div className="flex items-center justify-between"><div className="text-sm font-bold">{typeLabel(actionType)} <span className="text-zinc-500">· {fmt(frozen.videoTime)} · T{frozen.lap}</span></div><button onClick={reset} className="text-zinc-500 text-xs">Annuler</button></div>
-            {actionType!=='NOTE' && (a1?(
-              <div className="flex items-center gap-2 px-2 py-2 border border-zinc-700 bg-zinc-900"><span className="text-[9px] text-zinc-500 uppercase">{PART_BY_TYPE[actionType]}</span><span className="font-bold text-red-500">{a1.bib}</span><span className="flex-1 truncate text-sm">{a1.name}</span><button onClick={()=>{setA1(null);setPick('1');}} className="text-zinc-500 px-1">✕</button></div>
-            ):pick==='1'?(
-              <SeqPicker skaters={skaters} roles={roles} pointsById={pointsById} rankById={rankById} exclude={a2?[a2.id]:[]} onPick={(s)=>{setA1(s);setPick(null);}} />
-            ):<button onClick={()=>setPick('1')} className="w-full py-2 border border-zinc-700 text-zinc-400 text-sm">+ Acteur</button>)}
-            {actionType==='ATTAQUE' && <TagRow label="Type d'attaque" options={TAG_VOCAB.attackType} value={tags.attackType} onChange={v=>setTag('attackType',v)} />}
-            {actionType==='PELOTON_RAMENE' && <TagRow label="Ramené par" options={TAG_VOCAB.broughtBackBy} value={tags.broughtBackBy} onChange={v=>setTag('broughtBackBy',v)} />}
-            {(actionType==='ATTAQUE'||actionType==='PELOTON_RAMENE') && <TagRow label="Effort" options={TAG_VOCAB.effort} value={tags.effort} onChange={v=>setTag('effort',v)} />}
-            {actionType!=='NOTE' && (a1&&!a2&&pick!=='2'?<button onClick={()=>setPick('2')} className="w-full py-1.5 border border-zinc-800 text-zinc-500 text-xs">+ 2e acteur (optionnel)</button>:null)}
-            {pick==='2' && <SeqPicker skaters={skaters} roles={roles} pointsById={pointsById} rankById={rankById} exclude={a1?[a1.id]:[]} onPick={(s)=>{setA2(s);setPick(null);}} />}
-            {a2 && <div className="flex items-center gap-2 px-2 py-1.5 border border-zinc-800 bg-zinc-900 text-sm"><span className="text-[9px] text-zinc-500 uppercase">SUIVEUR</span><span className="font-bold text-red-500">{a2.bib}</span><span className="flex-1 truncate">{a2.name}</span><button onClick={()=>setA2(null)} className="text-zinc-500 px-1">✕</button></div>}
-            <input value={note} onChange={e=>setNote(e.target.value)} placeholder="note (optionnel)" className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500" />
-            <button onClick={saveAction} className="w-full py-3 bg-red-600 active:bg-red-500 text-white text-sm font-bold uppercase tracking-wider">Enregistrer</button>
+            <div className="flex items-center justify-between"><div className="text-sm font-bold">{evLabel({type:moveId==='CHUTE'||moveId==='NOTE'?moveId:'MOVE',move:moveId})} <span className="text-zinc-500">· {fmt(frozen.videoTime)} · T{frozen.lap}</span></div><button onClick={reset} className="text-zinc-500 text-xs">Annuler</button></div>
+            {moveId!=='NOTE' && (actor?(
+              <div className="flex items-center gap-2 px-2 py-2 border border-zinc-700 bg-zinc-900"><span className="text-[9px] text-zinc-500 uppercase">{moveId==='CHUTE'?'COUREUR':'ACTEUR'}</span><span className="font-bold text-red-500">{actor.bib}</span><span className="flex-1 truncate text-sm">{actor.name}</span><button onClick={()=>{setActor(null);setPick('actor');}} className="text-zinc-500 px-1">✕</button></div>
+            ):pick==='actor'?(
+              <SeqPicker skaters={skaters} roles={roles} pointsById={pointsById} rankById={rankById} exclude={target?[target.id]:[]} onPick={(s)=>{setActor(s);setPick(null);}} />
+            ):<button onClick={()=>setPick('actor')} className="w-full py-2 border border-zinc-700 text-zinc-400 text-sm">+ Acteur</button>)}
+            {moveId!=='CHUTE' && moveId!=='NOTE' && needsTarget(moveId) && (target?(
+              <div className="flex items-center gap-2 px-2 py-2 border border-zinc-800 bg-zinc-900"><span className="text-[9px] text-zinc-500 uppercase">CIBLE</span><span className="font-bold text-red-500">{target.bib}</span><span className="flex-1 truncate text-sm">{target.name}</span><button onClick={()=>setTarget(null)} className="text-zinc-500 px-1">✕</button></div>
+            ):pick==='target'?(
+              <SeqPicker skaters={skaters} roles={roles} pointsById={pointsById} rankById={rankById} exclude={actor?[actor.id]:[]} onPick={(s)=>{setTarget(s);setPick(null);}} />
+            ):<button onClick={()=>setPick('target')} className="w-full py-1.5 border border-zinc-800 text-zinc-500 text-xs">+ Cible</button>)}
+            {moveId!=='CHUTE' && moveId!=='NOTE' && <><TagRow label="Issue" options={MOVE_OUTCOMES} value={outcome} onChange={setOutcome} /><TagRow label="Coût (1-5)" options={TAG_VOCAB.cost} value={mcost} onChange={setMcost} /></>}
+            {moveId==='NOTE' && <input value={note} onChange={e=>setNote(e.target.value)} placeholder="note" className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500" />}
+            {moveId!=='NOTE' && <input value={note} onChange={e=>setNote(e.target.value)} placeholder="note (optionnel)" className="w-full bg-black border border-zinc-700 px-2 py-2 text-sm outline-none focus:border-red-500" />}
+            <button onClick={moveId==='CHUTE'||moveId==='NOTE'?()=>{addLogEvent({id:rid(),seq:Date.now(),source:'sequencer',type:moveId,actorKey:actor?nameKey(actor):null,actorBib:actor?actor.bib:null,videoTime:Math.round(frozen.videoTime*10)/10,lap:frozen.lap,note:note.trim()});reset();}:saveMove} className="w-full py-3 bg-red-600 active:bg-red-500 text-white text-sm font-bold uppercase tracking-wider">Enregistrer</button>
           </div>
         )}
 
-        {/* PANNEAU ENRICHISSEMENT D'UN POINT */}
-        {mode==='enrich' && enrichSp && (
+        {/* PANNEAU ENRICHISSEMENT (par attribution) */}
+        {mode==='enrich' && enrich && (
           <div className="border border-emerald-700 bg-emerald-950/10 p-3 space-y-2">
-            <div className="flex items-center justify-between"><div className="text-sm font-bold">Enrichir {enrichSp.isFinal?'ARR':'P'+enrichSp.label} <span className="text-zinc-500">· T{enrichSp.lap}{enrichSp.videoTime!=null?` · ${fmt(enrichSp.videoTime)}`:''}</span></div><button onClick={reset} className="text-zinc-500 text-xs">Annuler</button></div>
-            <div className="text-[11px] text-zinc-400">{enrichSp.positions.map(p=>`${p.bib} ${p.name} +${p.value}`).join(' · ')}</div>
-            <TagRow label="Contexte" options={TAG_VOCAB.context} value={tags.context} onChange={v=>setTag('context',v)} />
-            <TagRow label="Position" options={TAG_VOCAB.position} value={tags.position} onChange={v=>setTag('position',v)} />
-            <TagRow label="Type de sprint" options={TAG_VOCAB.sprintType} value={tags.sprintType} onChange={v=>setTag('sprintType',v)} />
-            <TagRow label="Effort" options={TAG_VOCAB.effort} value={tags.effort} onChange={v=>setTag('effort',v)} />
+            <div className="flex items-center justify-between"><div className="text-sm font-bold">Enrichir {enrich.isFinal?'ARR':'P'+enrich.label} · <span className="text-red-500">{enrich.bib}</span> {enrich.name} +{enrich.value}</div><button onClick={reset} className="text-zinc-500 text-xs">Annuler</button></div>
+            <TagRow label="Contexte" options={TAG_VOCAB.context} value={etags.context} onChange={v=>setEtags(t=>({...t,context:v}))} />
+            <TagRow label="Position avant le point" options={TAG_VOCAB.positionBefore} value={etags.positionBefore} onChange={v=>setEtags(t=>({...t,positionBefore:v}))} />
+            <TagRow label="Coût énergétique (1-5)" options={TAG_VOCAB.cost} value={etags.cost} onChange={v=>setEtags(t=>({...t,cost:v}))} />
             <button onClick={saveEnrich} className="w-full py-3 bg-emerald-700 active:bg-emerald-600 text-white text-sm font-bold uppercase tracking-wider">Enregistrer le contexte</button>
-            <div className="text-[9px] text-zinc-600">Le score (qui / combien) vient du live et n'est pas modifié.</div>
+            <div className="text-[9px] text-zinc-600">Le score (qui / combien) vient du live et n'est pas modifié. Enrichissement par coureur.</div>
           </div>
         )}
 
@@ -1246,14 +1251,10 @@ function Sequenceur({race,structure,skaters,roles,pointsById,rankById,addLogEven
         {mode==='correction' && (
           <div className="border border-amber-700 bg-amber-950/10 p-3 space-y-2">
             <div className="flex items-center justify-between"><div className="text-sm font-bold text-amber-300">Correction — point manquant</div><button onClick={reset} className="text-zinc-500 text-xs">Annuler</button></div>
-            <div className="text-[10px] text-amber-200/70">Action volontaire. Ce point sera marqué « ajouté au séquenceur », distinct du live.</div>
-            <div>
-              <div className="text-[9px] text-zinc-500 uppercase mb-0.5">Point</div>
-              <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">{structure.sprints.map(sp=><button key={sp.id} onClick={()=>setCorr(c=>({...c,label:sp.label}))} className={`px-2 py-1 text-[11px] border ${corr.label===sp.label?'border-amber-500 bg-amber-500/20 text-amber-200':'border-zinc-800 text-zinc-400'}`}>{sp.isFinal?'ARR':sp.label}</button>)}</div>
-            </div>
-            {corr.athlete?(
-              <div className="flex items-center gap-2 px-2 py-2 border border-zinc-700 bg-zinc-900"><span className="font-bold text-red-500">{corr.athlete.bib}</span><span className="flex-1 truncate text-sm">{corr.athlete.name}</span><button onClick={()=>setCorr(c=>({...c,athlete:null}))} className="text-zinc-500 px-1">✕</button></div>
-            ):<SeqPicker skaters={skaters} roles={roles} pointsById={pointsById} rankById={rankById} onPick={(s)=>setCorr(c=>({...c,athlete:s}))} />}
+            <div className="text-[10px] text-amber-200/70">Action volontaire, marquée « ajoutée au séquenceur », distincte du live.</div>
+            <div className="text-[9px] text-zinc-500 uppercase mb-0.5">Point</div>
+            <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">{structure.sprints.map(sp=><button key={sp.id} onClick={()=>setCorr(c=>({...c,label:sp.label}))} className={`px-2 py-1 text-[11px] border ${corr.label===sp.label?'border-amber-500 bg-amber-500/20 text-amber-200':'border-zinc-800 text-zinc-400'}`}>{sp.isFinal?'ARR':sp.label}</button>)}</div>
+            {corr.athlete?(<div className="flex items-center gap-2 px-2 py-2 border border-zinc-700 bg-zinc-900"><span className="font-bold text-red-500">{corr.athlete.bib}</span><span className="flex-1 truncate text-sm">{corr.athlete.name}</span><button onClick={()=>setCorr(c=>({...c,athlete:null}))} className="text-zinc-500 px-1">✕</button></div>):<SeqPicker skaters={skaters} roles={roles} pointsById={pointsById} rankById={rankById} onPick={(s)=>setCorr(c=>({...c,athlete:s}))} />}
             <TagRow label="Valeur" options={[['1','1 pt'],['2','2 pts'],['3','3 pts']]} value={String(corr.value)} onChange={v=>setCorr(c=>({...c,value:Number(v||2)}))} />
             <button onClick={saveCorrection} disabled={!corr.label||!corr.athlete} className="w-full py-3 bg-amber-700 active:bg-amber-600 disabled:opacity-40 text-white text-sm font-bold uppercase tracking-wider">Ajouter (correction)</button>
           </div>
