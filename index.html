@@ -419,7 +419,7 @@ const MODULES=[
   {id:'500m', label:'500 m', icon:'⚡', operational:false},
 ];
 const moduleLabel=(id)=>(MODULES.find(m=>m.id===id)||{}).label||id;
-const APP_VERSION='v25';
+const APP_VERSION='v25.1';
 const SCHEMA_VERSION=1;
 // Taxonomie des événements (figée — voir ARCHITECTURE-DONNEES.md). Extensible sans rupture.
 const EVENT_TYPES={
@@ -728,7 +728,7 @@ function EventScreen({event,updateEventMeta,race,mod,addRace,selectRace,renameRa
             <Field label="Circuit (m)"><input type="number" inputMode="numeric" value={config.circuitLength} onChange={e=>setCircuitLength(Number(e.target.value))} className="w-full bg-black border border-zinc-700 px-2 py-2 text-base outline-none focus:border-red-500" /></Field>
             <Field label="Distance (m)"><input type="number" inputMode="numeric" value={config.totalDistance} onChange={e=>setTotalDistance(Number(e.target.value))} className="w-full bg-black border border-zinc-700 px-2 py-2 text-base outline-none focus:border-red-500" /></Field>
           </div>
-          <div className="flex gap-1">{[200,250,333,400,500].map(v=><button key={v} onClick={()=>setCircuitLength(v)} className="flex-1 text-xs py-1.5 border border-zinc-800 active:bg-zinc-800 text-zinc-400">{v}</button>)}</div>
+          <div className="flex gap-1">{[169,200,250,333,400,500].map(v=><button key={v} onClick={()=>setCircuitLength(v)} className="flex-1 text-xs py-1.5 border border-zinc-800 active:bg-zinc-800 text-zinc-400">{v}</button>)}</div>
           <div className="grid grid-cols-4 gap-x-3 mt-1">
             <Stat label="Tours" value={structure.totalLaps} /><Stat label="Neutr." value={structure.neutralizedLaps} />
             <Stat label="Points" value={structure.sprints.length-1} /><Stat label="Fréq" value={structure.frequency===1?'1/t':'1/2t'} />
